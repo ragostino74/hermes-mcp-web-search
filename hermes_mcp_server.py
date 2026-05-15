@@ -46,7 +46,7 @@ except ImportError:
 TRANSPORT = os.environ.get("HERMES_MCP_TRANSPORT", "stdio")
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
-HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://localhost:18760")
+HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "")
 
 _cache = {}
 _CACHE_TTL = 1800
