@@ -47,6 +47,7 @@ TRANSPORT = os.environ.get("HERMES_MCP_TRANSPORT", "stdio")
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
 def _is_safe_url(url: str) -> bool:
     """Block access to localhost, private IPs, link-local, metadata endpoints."""
     parsed = urlparse(url)
@@ -283,6 +284,61 @@ def _search_ddg(query, max_results=5):
         return {"error": str(e), "results": []}
 
 
+def _search_searxng(query, max_results=5):
+    """Search via SearXNG instance."""
+    if not SEARXNG_URL:
+        return None  # Not configured — caller decides fallback
+    ck = _cache_key(f"searxng:{query}:{max_results}")
+    cached = _get_cached(ck)
+    if cached:
+        return cached
+    try:
+        import urllib.parse as up
+        params = {
+            "q": query,
+            "format": "json",
+            "engines": "google,bing,duckduckgo,wikipedia",
+            "categories": "general",
+            "language": "it",
+        }
+        url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
+        with httpx.Client(timeout=20) as client:
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/4.0"})
+            data = resp.json()
+
+        results = []
+        for item in data.get("results", [])[:max_results]:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("content", ""),
+            })
+
+        result = {
+            "query": query,
+            "results": results,
+            "total": len(results),
+            "source": "searxng",
+        }
+        _set_cache(ck, result)
+        return result
+    except Exception as e:
+        sys.stderr.write(f"SearXNG error: {e}\n")
+        return None
+
+
+def _search_web(query, max_results=5):
+    """Unified web search: tries SearXNG first, falls back to DuckDuckGo."""
+    # Try SearXNG if configured
+    searxng_result = _search_searxng(query, max_results)
+    if searxng_result is not None and searxng_result.get("results"):
+        return searxng_result
+
+    # Fall back to DuckDuckGo
+    ddg_result = _search_ddg(query, max_results)
+    return ddg_result
+
+
 def _deep_search_via_hermes(query):
     """Send to Hermes bridge for deep search with reasoning."""
     if not HTTPX_AVAILABLE or not HERMES_BRIDGE_URL:
@@ -354,10 +410,10 @@ async def get_current_datetime() -> str:
 @rate_limited
 @mcp_server.tool()
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Ricerca informazioni su internet con DuckDuckGo + sintesi LLM."""
+    """Ricerca informazioni su internet (SearXNG / DuckDuckGo) + sintesi LLM."""
     query = query.strip()
     max_r = min(max(1, int(max_results)), 10)
-    result = await _external_call(_search_ddg, query, max_r)
+    result = await _external_call(_search_web, query, max_r)
     if "results" in result and result.get("results") and len(result["results"]) > 0:
         raw = "\n---\n".join([f"{r['title']}: {r['snippet'][:200]}" for r in result["results"]])
         summary_prompt = (
@@ -375,7 +431,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
 async def deep_search(query: str) -> str:
     """Ricerca profonda con analisi del tuo LLM locale."""
     query = query.strip()
-    search_result = await _external_call(_search_ddg, query)
+    search_result = await _external_call(_search_web, query)
     if search_result.get("error"):
         return json.dumps(search_result, indent=2)
     raw_content = "\n---\n".join([f"# {r['title']}\n{r['snippet']}" for r in search_result.get("results", [])])
@@ -505,8 +561,8 @@ if HAS_FASTAPI:
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     async def api_search(query: str = Query(..., description="Search query"), max_results: int = 5):
-        """Web search API endpoint (rate-limited)."""
-        result = await _external_call(_search_ddg, query, min(max(1, max_results), 10))
+        """Web search API endpoint (rate-limited, SearXNG/duckduckgo)."""
+        result = await _external_call(_search_web, query, min(max(1, max_results), 10))
         return result
 
     @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
@@ -538,10 +594,24 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"\U0001f52e Hermes MCP Server v3.0", file=sys.stderr)
+    print(f"\U0001f52e Hermes MCP Server v4.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
+
+    # SearXNG status check
+    if SEARXNG_URL and HTTPX_AVAILABLE:
+        try:
+            with httpx.Client(timeout=5) as c:
+                r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=True)
+                if r.status_code == 200 and isinstance(r.json(), dict):
+                    print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
+                else:
+                    print(f"   SearXNG: responding (status {r.status_code})", file=sys.stderr)
+        except Exception as e:
+            print(f"   SearXNG: unreachable, using DuckDuckGo fallback ({e})", file=sys.stderr)
+    elif DDG_AVAILABLE:
+        print(f"   Search engine: DuckDuckGo (no SEARXNG_URL configured)", file=sys.stderr)
 
     if HERMES_BRIDGE_URL and HTTPX_AVAILABLE:
         try:

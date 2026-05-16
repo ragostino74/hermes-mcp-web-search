@@ -5,7 +5,7 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 
 ## Funzionalità
 
-- **web_search** — Ricerca rapida via DuckDuckGo + sintesi con il tuo LLM
+- **web_search** — Ricerca rapida via SearXNG (se configurato) o DuckDuckGo + sintesi con il tuo LLM
 - **deep_search** — Ricerca profonda con analisi strutturata dell'LLM
 - **read_webpage** — Legge e sintetizza pagine web
 - **hermes_search** — Ricerca potenziata tramite bridge Hermes Agent (opzionale)
@@ -26,11 +26,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Installa le dipendenze
-pip install mcp[serve] duckduckgo-search httpx
+pip install mcp[serve] duckduckgo-search httpx aiolimiter
 
 # Configura l'endpoint LLM (opzionale, usa default localhost:10000)
 export LLM_ENDPOINT="http://localhost:10000/v1"
 export LLM_MODEL="Qwen3.6-35B-A3B-Q8_0.gguf"
+
+# Opzionale: configura SearXNG (se non impostato, usa DuckDuckGo)
+export SEARXNG_URL="http://10.0.0.154:8888"
 
 # Avvia in modalità stdio (per Claude Desktop, VS Code, ecc.)
 python hermes_mcp_server.py
@@ -49,6 +52,7 @@ python hermes_mcp_server.py
 | `LLM_MODEL` | `Qwen3.6-35B-A3B-Q8_0.gguf` | Nome del modello da usare per la sintesi |
 | `HERMES_MCP_TRANSPORT` | `stdio` | Modalità di trasporto: `stdio`, `http`, o `dual` |
 | `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP |
+| `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, viene usata come motore di ricerca principale con fallback automatico su DuckDuckGo. Esempio: `http://10.0.0.154:8888` |
 | `HERMES_BRIDGE_URL` | *(disabilitato)* | URL del bridge Hermes Agent (opzionale). Di default vuoto per evitare collisioni con la porta MCP. Vedi sotto per abilitarlo su un'altra porta. |
 
 ## Abilitare il Bridge Hermes Agent su Porta Diversa
