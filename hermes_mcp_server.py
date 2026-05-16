@@ -147,6 +147,57 @@ def _set_cache(key, data):
     _cache[key] = {"data": data, "time": datetime.now(timezone.utc)}
 
 
+# ── Rate Limiter / External Call Guard ───────────────────────────────────
+import asyncio
+from contextlib import asynccontextmanager
+
+_RATE_LIMIT_MAX = int(os.environ.get("HERMES_MCP_RATE_LIMIT", "5"))       # calls/minute
+_RATE_LIMIT_WINDOW = 60                                                     # seconds
+_SEMAPHORE_MAX  = int(os.environ.get("HERMES_MCP_CONCURRENCY", "3"))         # max parallel ext calls
+
+# Token bucket: _RATE_LIMIT_MAX tokens per _RATE_LIMIT_WINDOW seconds
+try:
+    from aiolimiter import AsyncLimiter as _AsyncLimiter
+    _rate_limiter = _AsyncLimiter(_RATE_LIMIT_MAX, _RATE_LIMIT_WINDOW)
+except ImportError:
+    _rate_limiter = None
+
+# Semaphore: hard cap on concurrent external calls
+_external_sem = asyncio.Semaphore(_SEMAPHORE_MAX)
+
+
+async def _external_call(fn, *args, **kwargs):
+    """Run a sync callable inside semaphore + token-bucket guard.
+
+    Meant to be awaited by async callers (MCP tools, FastAPI routes).
+    If ``aiolimiter`` is unavailable only the semaphore applies.
+    """
+    async with _external_sem:
+        if _rate_limiter is not None:
+            async with _rate_limiter:
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: fn(*args, **kwargs))
+        else:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, lambda: fn(*args, **kwargs))
+
+
+def rate_limited(fn):
+    """Decorator: wraps any async function under semaphore + token bucket."""
+    import functools
+
+    @functools.wraps(fn)
+    async def wrapper(*a, **kw):
+        async with _external_sem:
+            if _rate_limiter is not None:
+                async with _rate_limiter:
+                    return await fn(*a, **kw)
+            else:
+                return await fn(*a, **kw)
+
+    return wrapper
+
+
 def _sanitize_for_llm(text: str, max_len: int = 8000) -> str:
     """Escape / limit user-supplied text before injecting it into an LLM prompt.
 
@@ -267,28 +318,30 @@ else:
 
 
 @mcp_server.tool()
+@rate_limited
 async def web_search(query: str, max_results: int = 5) -> str:
     """Ricerca informazioni su internet con DuckDuckGo + sintesi LLM."""
     query = query.strip()
     max_r = min(max(1, int(max_results)), 10)
-    result = _search_ddg(query, max_r)
+    result = await _external_call(_search_ddg, query, max_r)
     if "results" in result and result.get("results") and len(result["results"]) > 0:
         raw = "\n---\n".join([f"{r['title']}: {r['snippet'][:200]}" for r in result["results"]])
         summary_prompt = (
             f"Sintetizza in italiano questi risultati di ricerca per: '{query}'\n\n"
             f"{raw}\n\nRispondi con 3-5 punti chiave."
         )
-        llm_result = _summarize_with_llm(summary_prompt)
+        llm_result = await _external_call(_summarize_with_llm, summary_prompt)
         if llm_result:
             result["llm_summary"] = llm_result
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp_server.tool()
+@rate_limited
 async def deep_search(query: str) -> str:
     """Ricerca profonda con analisi del tuo LLM locale."""
     query = query.strip()
-    search_result = _search_ddg(query)
+    search_result = await _external_call(_search_ddg, query)
     if search_result.get("error"):
         return json.dumps(search_result, indent=2)
     raw_content = "\n---\n".join([f"# {r['title']}\n{r['snippet']}" for r in search_result.get("results", [])])
@@ -297,7 +350,7 @@ async def deep_search(query: str) -> str:
         f"Risultati:\n{raw_content[:10000]}\n\n"
         "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
     )
-    llm_answer = _summarize_with_llm(llm_prompt)
+    llm_answer = await _external_call(_summarize_with_llm, llm_prompt)
     output = {
         "status": "success",
         "query": query,
@@ -308,6 +361,7 @@ async def deep_search(query: str) -> str:
 
 
 @mcp_server.tool()
+@rate_limited
 async def read_webpage(url: str) -> str:
     """Leggi il contenuto di una pagina web con riassunto LLM."""
     if not url.startswith(("http://", "https://")):
@@ -328,7 +382,7 @@ async def read_webpage(url: str) -> str:
         summary = None
         if len(text) > 200:
             prompt = f"Sintetizza in italiano:\n\n{text[:8000]}\n\nFatti principali in max 5 punti."
-            summary = _summarize_with_llm(prompt)
+            summary = await _external_call(_summarize_with_llm, prompt)
         return json.dumps(
             {
                 "status": "success",
@@ -346,10 +400,11 @@ async def read_webpage(url: str) -> str:
 
 
 @mcp_server.tool()
+@rate_limited
 async def hermes_search(query: str) -> str:
     """Ricerca completa tramite Hermes Agent (browser + web)."""
     query = query.strip()
-    result = _deep_search_via_hermes(query)
+    result = await _external_call(_deep_search_via_hermes, query)
     if result and result.get("status") == "ok" and result.get("response"):
         return json.dumps(
             {
@@ -372,7 +427,83 @@ async def hermes_search(query: str) -> str:
     )
 
 
+# ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
+_BRIDGE_PORT = int(os.environ.get("HERMES_MCP_BRIDGE_PORT", "18761"))
+
+try:
+    from fastapi import FastAPI, Query
+    from fastapi.middleware.cors import CORSMiddleware
+    from contextlib import asynccontextmanager
+    HAS_FASTAPI = True
+except ImportError:
+    HAS_FASTAPI = False
+
+
+@asynccontextmanager
+async def _bridge_lifespan(_app):
+    yield  # startup / shutdown hooks here if needed
+
+
+if HAS_FASTAPI:
+    bridge_app = FastAPI(
+        title="Hermes Web Search Bridge",
+        version="4.0.0",
+        lifespan=_bridge_lifespan,
+    )
+
+    bridge_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    @bridge_app.get("/health")
+    async def health():
+        """Health check endpoint."""
+        return {
+            "status": "ok",
+            "version": "4.0.0",
+            "rate_limit_max": _RATE_LIMIT_MAX,
+            "concurrency_max": _SEMAPHORE_MAX,
+            "token_bucket_available": _rate_limiter is not None,
+        }
+
+    @bridge_app.api_route("/api/search", methods=["GET", "POST"])
+    async def api_search(query: str = Query(..., description="Search query"), max_results: int = 5):
+        """Web search API endpoint (rate-limited)."""
+        result = await _external_call(_search_ddg, query, min(max(1, max_results), 10))
+        return result
+
+    @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
+    async def api_deep_search(query: str = Query(..., description="Search query")):
+        """Deep search API endpoint (rate-limited, uses LLM summarization)."""
+        return await _external_call(_summarize_with_llm, query)
+
+
+# ── Startup helpers ──────────────────────────────────────────────────────
+
+async def _start_http_bridge():
+    """Launch the FastAPI bridge server on HERMES_MCP_BRIDGE_PORT."""
+    if not HAS_FASTAPI:
+        sys.stderr.write("Bridge: skipping (fastapi not installed)\n")
+        return
+    try:
+        import uvicorn
+        config = uvicorn.Config(bridge_app, host="0.0.0.0", port=_BRIDGE_PORT, log_level="warning")
+        server = uvicorn.Server(config)
+        t = asyncio.create_task(server.serve())
+        sys.stderr.write(f"Bridge: listening on :{_BRIDGE_PORT}\n")
+        return t
+    except Exception as e:
+        sys.stderr.write(f"Bridge: failed to start ({e})\n")
+        return None
+
+
 async def main():
+    # ── Start bridge server (if FastAPI available) ────────────────────────
+    _bridge_task = await _start_http_bridge()
+
     print(f"\U0001f52e Hermes MCP Server v3.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
@@ -411,13 +542,6 @@ async def main():
         if FASTMCP_AVAILABLE:
             print(f"\nRunning in HTTP (StreamableHTTP) mode on :{port}...", file=sys.stderr)
 
-            async def shutdown_handler():
-                print("\nShutting down...", file=sys.stderr)
-                sys.exit(0)
-
-            sig_mod.signal(sig_mod.SIGINT, lambda s, f: asyncio.create_task(shutdown_handler()))
-            sig_mod.signal(sig_mod.SIGTERM, lambda s, f: asyncio.create_task(shutdown_handler()))
-
             # Build app with CORS support (WebUI browser needs cross-origin headers)
             from starlette.applications import Starlette
             from starlette.routing import Mount
@@ -438,7 +562,50 @@ async def main():
             import uvicorn
             config = uvicorn.Config(cors_app, host="0.0.0.0", port=port, log_level="info")
             server = uvicorn.Server(config)
-            await server.serve()
+
+            # Shared shutdown signal — replaces sys.exit(0) in signal handlers
+            _shutdown_event = asyncio.Event()
+            _mcpx_flag = False  # True if MCP server crashed (not graceful shutdown)
+
+            def _on_signal(_sig, _frame):
+                print("\nShutting down...", file=sys.stderr)
+                _shutdown_event.set()
+
+            sig_mod.signal(sig_mod.SIGINT, _on_signal)
+            sig_mod.signal(sig_mod.SIGTERM, _on_signal)
+
+            try:
+                await server.serve()
+            except SystemExit as e:
+                print(f"\nMCP HTTP server exited (code {e.code})", file=sys.stderr)
+                if e.code != 0:
+                    _mcpx_flag = True
+                    if _bridge_task is not None:
+                        print("   Bridge keeps running on port " + str(_BRIDGE_PORT), file=sys.stderr)
+
+            # If MCP crashed, keep event loop alive so the bridge stays up
+            # until SIGINT/SIGTERM arrives
+            if _mcpx_flag and _bridge_task is not None:
+                await _shutdown_event.wait()  # blocks until signal handler fires
+
+            # Graceful shutdown (signal or MCP exited normally)
+            if _shutdown_event.is_set():
+                print("Shutting down...", file=sys.stderr)
+                if _bridge_task is not None:
+                    _bridge_task.cancel()
+                    try:
+                        await _bridge_task
+                    except asyncio.CancelledError:
+                        pass
+
+            # If MCP crashed but no signal received, stay alive for bridge
+            elif _mcpx_flag and _bridge_task is not None:
+                print("   Keeping event loop alive for bridge...", file=sys.stderr)
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    pass  # killed by external force — bridge was already cancelled above? No.
 
         else:
             print(
