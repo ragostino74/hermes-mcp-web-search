@@ -8,7 +8,6 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 - **web_search** — Ricerca rapida via SearXNG (se configurato) o DuckDuckGo + sintesi con il tuo LLM
 - **deep_search** — Ricerca profonda con analisi strutturata dell'LLM
 - **read_webpage** — Legge e sintetizza pagine web
-- **hermes_search** — Ricerca potenziata tramite bridge Hermes Agent (opzionale)
 - **get_current_datetime** — Data e ora attuale in italiano (fuso Europe/Rome)
 
 ## Requisiti
@@ -52,27 +51,7 @@ python hermes_mcp_server.py
 | `LLM_MODEL` | `Qwen3.6-35B-A3B-Q8_0.gguf` | Nome del modello da usare per la sintesi |
 | `HERMES_MCP_TRANSPORT` | `stdio` | Modalità di trasporto: `stdio`, `http`, o `dual` |
 | `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP |
-| `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, viene usata come motore di ricerca principale con fallback automatico su DuckDuckGo. Esempio: `http://10.0.0.154:8888` |
-| `HERMES_BRIDGE_URL` | *(disabilitato)* | URL del bridge Hermes Agent (opzionale). Di default vuoto per evitare collisioni con la porta MCP. Vedi sotto per abilitarlo su un'altra porta. |
-
-## Abilitare il Bridge Hermes Agent su Porta Diversa
-
-Di default `hermes_search` è disabilitato per evitare collisioni con la porta del server MCP (18760). Per riattivarlo, punta `HERMES_BRIDGE_URL` a un **host:porta diversa**:
-
-```bash
-# Esempio: bridge su localhost:8081 (non 18760!)
-export HERMES_BRIDGE_URL="http://localhost:8081"
-
-# Oppure su IP diverso
-export HERMES_BRIDGE_URL="http://192.168.1.100:8081"
-
-# Poi avvia il server (bridge sarà attivo)
-python hermes_mcp_server.py
-```
-
-Al startup vedrai nello stderr:
-- `Bridge status: connected` se l'endpoint `/health` risponde
-- `Bridge: unavailable (...)` se non è raggiungibile (fallback su DDG+LLM)
+|| `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, viene usata come motore di ricerca principale con fallback automatico su DuckDuckGo. Esempio: `http://10.0.0.154:8888` |
 
 ## Integrazione con llama.cpp WebUI
 
@@ -81,7 +60,7 @@ Al startup vedrai nello stderr:
 3. Aggiungi un nuovo server con:
    - **URL**: `http://localhost:18760/mcp` (o l'IP della tua macchina)
    - **Transport**: `streamable_http`
-4. Il server dovrebbe connettersi e mostrare i 5 tools disponibili
+4. Il server dovrebbe connettersi e mostrare i 4 tools disponibili
 
 ## Integrazione con altri client MCP
 

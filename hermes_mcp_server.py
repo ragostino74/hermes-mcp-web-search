@@ -489,34 +489,6 @@ async def read_webpage(url: str) -> str:
         return json.dumps({"error": str(e), "url": url}, indent=2)
 
 
-@mcp_server.tool()
-@rate_limited
-async def hermes_search(query: str) -> str:
-    """Ricerca completa tramite Hermes Agent (browser + web)."""
-    query = query.strip()
-    result = await _external_call(_deep_search_via_hermes, query)
-    if result and result.get("status") == "ok" and result.get("response"):
-        return json.dumps(
-            {
-                "status": "success",
-                "method": "hermes_agent",
-                "query": query,
-                "answer": result["response"],
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    return json.dumps(
-        {
-            "status": "partial",
-            "method": "local_fallback",
-            "message": "Hermes bridge unavailable, using DuckDuckGo + LLM fallback",
-            "query": query,
-        },
-        indent=2,
-    )
-
-
 # ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
 _BRIDGE_PORT = int(os.environ.get("HERMES_MCP_BRIDGE_PORT", "18761"))
 
