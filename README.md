@@ -9,6 +9,7 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 - **deep_search** — Ricerca profonda con analisi strutturata dell'LLM
 - **read_webpage** — Legge e sintetizza pagine web
 - **hermes_search** — Ricerca potenziata tramite bridge Hermes Agent (opzionale)
+- **get_current_datetime** — Data e ora attuale in italiano (fuso Europe/Rome)
 
 ## Requisiti
 
@@ -76,7 +77,7 @@ Al startup vedrai nello stderr:
 3. Aggiungi un nuovo server con:
    - **URL**: `http://localhost:18760/mcp` (o l'IP della tua macchina)
    - **Transport**: `streamable_http`
-4. Il server dovrebbe connettersi e mostrare i 4 tools disponibili
+4. Il server dovrebbe connettersi e mostrare i 5 tools disponibili
 
 ## Integrazione con altri client MCP
 

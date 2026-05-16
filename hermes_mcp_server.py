@@ -317,8 +317,42 @@ else:
     mcp_server = FastMCP(name="hermes-web-mcp")
 
 
+# ─── Italian timezone helper ──────────────────────────────
+try:
+    import zoneinfo
+    _TIMEZONE = zoneinfo.ZoneInfo("Europe/Rome")
+except Exception:
+    from datetime import timezone as _tz, timedelta as _td
+    class _CET(_tz):
+        def utcoffset(self, dt): return _td(hours=1)
+        def dst(self, dt): return _td(hours=0)
+        def tzname(self, dt): return "CET"
+    _TIMEZONE = _CET("CET")
+
+_DAYS_IT = ["Lunedì","Martedì","Mercoledì","Giovedì","Venerdì","Sabato","Domenica"]
+_MONTHS_IT = [
+    "gennaio","febbraio","marzo","aprile","maggio","giugno",
+    "luglio","agosto","settembre","ottobre","novembre","dicembre",
+]
+
+
 @mcp_server.tool()
+async def get_current_datetime() -> str:
+    """Ottieni la data e ora attuale in formato italiano (Europe/Rome)."""
+    now = datetime.now(_TIMEZONE)
+    return json.dumps({
+        "date": f"{_DAYS_IT[now.weekday()]}, {now.day} {_MONTHS_IT[now.month - 1]} {now.year}",
+        "time": now.strftime("%H:%M:%S"),
+        "full_datetime": f"{_DAYS_IT[now.weekday()]} {now.day} {_MONTHS_IT[now.month - 1]} {now.year} alle {now.strftime('%H:%M:%S')}",
+        "timezone": "Europe/Rome",
+        "iso": now.isoformat(),
+        "timestamp": int(now.timestamp()),
+        "week_number": now.isocalendar()[1],
+    }, ensure_ascii=False)
+
+
 @rate_limited
+@mcp_server.tool()
 async def web_search(query: str, max_results: int = 5) -> str:
     """Ricerca informazioni su internet con DuckDuckGo + sintesi LLM."""
     query = query.strip()
