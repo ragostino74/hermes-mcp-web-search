@@ -51,40 +51,70 @@ def _is_safe_url(url: str) -> bool:
     """Block access to localhost, private IPs, link-local, metadata endpoints."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
-    
+
     # Block by hostname
     blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
     if host in blocked_hosts:
         return False
-    
+
     # Resolve IP to catch localhost aliases
     import socket
     try:
         addrinfo = socket.getaddrinfo(host, None)
         for family, socktype, proto, canonname, sockaddr in addrinfo:
             ip = sockaddr[0]
-            # Block loopback (127.x.x.x)
+
+            # ── IPv4 private / loopback ──────────────────────────────
+            if ip == "127.0.0.1":
+                return False
             if ip.startswith("127."):
                 return False
-            # Block IPv6 loopback
-            if ip == "::1" or ip == "fe80::1":
+            if ip.startswith("10.") or ip.startswith("192.168."):
                 return False
-            # Block private ranges (RFC 1918)
-            if ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172."):
-                # 172.16.0.0 - 172.31.255.255
+            if ip.startswith("172."):
                 parts = ip.split(".")
                 if len(parts) == 4 and 16 <= int(parts[1]) <= 31:
                     return False
-            # Block link-local (169.254.x.x)
             if ip.startswith("169.254."):
                 return False
-            # Block metadata endpoints
-            if ip.startswith("169.254.") or ip == "0.0.0.0":
+
+            # ── IPv6 private ranges ─────────────────────────────────
+            lower = ip.lower()
+            # Unique Local Addresses (ULA) fc00::/7  (includes fd00::/8)
+            if lower.startswith("fc") or lower.startswith("fd"):
+                return False
+            # Loopback ::1
+            if ip == "::1":
+                return False
+            # Link-local fe80::/10
+            if lower.startswith("fe8") or lower.startswith("fe9") or \
+               lower.startswith("fea") or lower.startswith("feb"):
+                return False
+            # Site-local (deprecated) fec0::/10 — still block
+            if lower.startswith("fec"):
+                return False
+            # IPv4-mapped IPv6 ::ffff:x.x.x.x  → unmask and check private
+            if ip.startswith("::ffff:"):
+                mapped = ip.split(":")[-1]  # e.g. "127.0.0.1"
+                if mapped == "127.0.0.1":
+                    return False
+                if mapped.startswith("127.") or mapped.startswith("10.") \
+                   or mapped.startswith("192.168."):
+                    return False
+                if mapped.startswith("172."):
+                    parts = mapped.split(".")
+                    if len(parts) == 4 and 16 <= int(parts[1]) <= 31:
+                        return False
+                if mapped.startswith("169.254."):
+                    return False
+
+            # Block metadata endpoints (same as before)
+            if ip == "0.0.0.0":
                 return False
     except (socket.gaierror, OSError):
         # If DNS resolution fails, block to be safe
         return False
-    
+
     return True
 
 _cache: dict[str, dict] = {}  # Simple dict with LRU eviction
@@ -117,16 +147,49 @@ def _set_cache(key, data):
     _cache[key] = {"data": data, "time": datetime.now(timezone.utc)}
 
 
-def _summarize_with_llm(prompt_text, max_tokens=1500, temperature=0.3):
+def _sanitize_for_llm(text: str, max_len: int = 8000) -> str:
+    """Escape / limit user-supplied text before injecting it into an LLM prompt.
+
+    Prevents prompt injection by:
+    - Stripping or neutralising markdown/code-block syntax that could confuse the model
+    - Truncating to a safe length so very long injected payloads can't overflow
+      the context window or trigger unintended behaviour
+    """
+    if not isinstance(text, str):
+        return ""
+    text = text.strip()
+    # Trim extremely long inputs (injected data can be arbitrarily large)
+    if len(text) > max_len:
+        text = text[:max_len] + "\n\n[... truncated for safety ...]"
+    # Neutralise common prompt-injection markers that an attacker might use to
+    # "escape" the injected content and control subsequent LLM behaviour.
+    replacements = [
+        ("```", "[CODE_BLOCK]"),          # code fences
+        ("<!--", "[HTML_COMMENT]"),       # HTML comments
+        (">>>",  "[PYTHON_PROMPT]"),      # Python REPL prompt
+        ("SYSTEM:", "USER_NOTE: "),       # force-role tokens
+        ("ASSISTANT:", "ASSISTANT_NOTE: "),
+        ("USER:", "QUERY: "),
+    ]
+    for bad, good in replacements:
+        text = text.replace(bad, good)
+    return text
+
+
+def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: float = 0.3) -> str:
     """Use local llama.cpp to summarize content."""
     try:
         import http.client as hc
         p = urlparse(LLM_ENDPOINT)
         host = p.hostname or "localhost"
         port = p.port or 80
+
+        # Pre-sanitise the full prompt (which may contain injected user data)
+        safe_prompt = _sanitize_for_llm(prompt_text, max_len=6000)
+
         body = json.dumps({
             "model": LLM_MODEL,
-            "messages": [{"role": "user", "content": prompt_text}],
+            "messages": [{"role": "user", "content": safe_prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
@@ -140,7 +203,7 @@ def _summarize_with_llm(prompt_text, max_tokens=1500, temperature=0.3):
             return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
         sys.stderr.write(f"LLM summarize error: {e}\n")
-    return None
+    return ""
 
 
 def _search_ddg(query, max_results=5):
