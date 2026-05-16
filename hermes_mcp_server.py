@@ -499,7 +499,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/4.1"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/5.2.0"})
             data = resp.json()
 
         results = []
@@ -540,7 +540,8 @@ def _deep_search_via_hermes(query):
     if not HTTPX_AVAILABLE or not HERMES_BRIDGE_URL:
         return None
     try:
-        with httpx.Client(timeout=180) as client:
+        # MEDIUM #4: Granular timeout instead of flat 180s (was causing thread-pool saturation)
+        with httpx.Client(timeout=httpx.Timeout(connect=30, read=60, write=30, pool=5)) as client:
             resp = client.post(
                 f"{HERMES_BRIDGE_URL}/api/search",
                 json={"query": query},
@@ -562,7 +563,7 @@ if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
         name="hermes-web-mcp",
         host=_MCP_BIND_ADDR,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False,
+            enable_dns_rebinding_protection=True,  # HIGH #2: Re-enabled DNS rebinding protection
         ),
     )
 else:
@@ -661,14 +662,42 @@ async def read_webpage(url: str) -> str:
     if not _is_safe_url(url):
         return json.dumps({"error": "Accesso bloccato: localhost, IP privati e link-local non sono permessi"}, indent=2)
     try:
-        with httpx.Client(timeout=30) as client:
-            resp = client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
-                follow_redirects=True,
-            )
-            text = re.sub(r"<[^>]+>", " ", resp.text)
-            text = re.sub(r"\s+", " ", text).strip()[:15000]
+        # FIX CRITICAL #1 (SSRF via redirect): Disable automatic redirects.
+        # If a user-controlled URL redirects to a private/metadata IP (e.g. 169.254.169.254),
+        # httpx would follow it and exfiltrate cloud credentials. Instead we allow at most
+        # 3 manual redirects, verifying _is_safe_url() at each hop.
+        final_url = url
+        max_redirects = 3
+        for _ in range(max_redirects):
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
+                resp = client.get(
+                    final_url,
+                    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
+                )
+            # Check if this is a redirect (3xx)
+            if 300 <= resp.status_code < 400:
+                redirect_location = resp.headers.get("location")
+                if not redirect_location:
+                    return json.dumps({"error": "Redirect senza location header", "url": url}, indent=2)
+                # Resolve relative URLs to absolute
+                from urllib.parse import urljoin as _urljoin
+                if not redirect_location.startswith(("http://", "https://")):
+                    redirect_location = _urljoin(final_url, redirect_location)
+                # Verify the redirect target is safe
+                if not _is_safe_url(redirect_location):
+                    return json.dumps({
+                        "error": f"Accesso bloccato: redirect verso URL non sicuro ({redirect_location})",
+                        "url": url,
+                        "redirect_from": final_url,
+                        "redirect_to": redirect_location,
+                    }, indent=2)
+                final_url = redirect_location
+            else:
+                # Not a redirect — proceed with response
+                break
+
+        text = re.sub(r"<[^>]+>", " ", resp.text)
+        text = re.sub(r"\s+", " ", text).strip()[:15000]
         title_match = re.search(r'<title[^>]*>([^<]+)</title>', resp.text, re.I)
         raw_title = title_match.group(1) if title_match else "N/A"
         title = _sanitize_for_llm(raw_title, max_len=200)  # XSS / injection safe for JSON output
@@ -714,18 +743,30 @@ async def _bridge_lifespan(_app):
     yield  # startup / shutdown hooks here if needed
 
 
+# HIGH #3: CORS origins — configurable via HERMES_MCP_CORS_ORIGINS env var (comma-separated).
+# Default: localhost:* only. Setting to "[]" disables all CORS (same-origin only).
+_CORS_RAW = os.environ.get("HERMES_MCP_CORS_ORIGINS", "").strip()
+if _CORS_RAW.lower() == "[]":
+    cors_origins_list: list[str] = []  # Disable entirely — same-origin only
+elif _CORS_RAW:
+    cors_origins_list = [o.strip() for o in _CORS_RAW.split(",") if o.strip()]
+else:
+    cors_origins_list = ["http://localhost:*", "https://localhost:*"]  # Default: localhost only
+
+
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="4.1.0",
+        version="5.2.0",
         lifespan=_bridge_lifespan,
     )
 
     bridge_app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins_list,  # HIGH #3: Configurable via HERMES_MCP_CORS_ORIGINS
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
+        allow_credentials=True,  # Required for cookies/auth when origins are restricted
     )
 
     # ── Request audit logging (middleware: fires after CORS) ──────
@@ -749,7 +790,7 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure."""
-        return {"status": "ok", "version": "4.1.0"}
+        return {"status": "ok", "version": "5.2.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -799,7 +840,8 @@ async def main():
     if SEARXNG_URL and HTTPX_AVAILABLE:
         try:
             with httpx.Client(timeout=5) as c:
-                r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=True)
+                # CRITICAL #1b: No redirect following — prevents SSRF via metadata endpoint (169.254.169.254)
+                r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=False)
                 if r.status_code == 200 and isinstance(r.json(), dict):
                     print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
                 else:
@@ -853,7 +895,7 @@ async def main():
             # Wrap in CORSMiddleware so browser requests work
             cors_app = CORSMiddleware(
                 app=mcp_app,
-                allow_origins=["*"],
+                allow_origins=cors_origins_list,  # HIGH #3: Same list as bridge (configurable)
                 allow_methods=["POST", "OPTIONS"],
                 allow_headers=["*"],
                 expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
