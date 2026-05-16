@@ -1,13 +1,45 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Web Search Server -- Doppio trasporto (stdio + HTTP/StreamableHTTP)
+Hermes MCP Server v2.3.0 — Web Search & LLM Synthesis Bridge
 
-Uso stdio:
+MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
+  - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
+  - deep_search   : Ricerca profonda con analisi strutturata dell'LLM
+  - read_webpage  : Lettura e sintesi LLM di pagine web (con SSRF guard)
+  - get_current_datetime : Data/ora in italiano (Europe/Rome)
+
+Caratteristiche:
+  - Doppio trasporto: stdio (Claude Desktop, VS Code) + HTTP/StreamableHTTP
+  - Rate limiting configurabile (token bucket + semaphore)
+  - Bridge REST API su :18761 per integrazioni esterne
+  - SSRF protection completa (IP privati, IPv6, metadata endpoints, DNS rebinding)
+  - Prompt injection sanitization (3 fasi: control chars, role markers, structural)
+  - Cache LRU con TTL e SHA-256
+
+Modi di esecuzione:
+  # STDIO (default — per Claude Desktop, VS Code, Hermes Agent)
   python hermes_mcp_server.py
 
-Uso HTTP (per llama.cpp WebUI e altri client browser):
+  # HTTP/StreamableHTTP (per llama.cpp WebUI e browser)
   HERMES_MCP_TRANSPORT=http HERMES_MCP_PORT=18760 \
     python hermes_mcp_server.py
+
+  # DUAL (entrambi insieme)
+  HERMES_MCP_TRANSPORT=dual HERMES_MCP_PORT=18760 \
+    python hermes_mcp_server.py
+
+Variabili d'ambiente:
+  LLM_ENDPOINT        : Endpoint LLM OpenAI-compatible (default: localhost:10000/v1)
+  LLM_MODEL           : Nome modello (default: Qwen3.6-35B-A3B-Q8_0.gguf)
+  SEARXNG_URL         : Istanzа SearXNG per ricerca avanzata (opzionale)
+  HERMES_MCP_PORT     : Porta HTTP MCP (default: 18760)
+  HERMES_MCP_BRIDGE_PORT : Porta bridge API (default: 18761)
+  HERMES_MCP_TRANSPORT : stdio | http | dual (default: stdio)
+  HERMES_MCP_RATE_LIMIT : Max chiamate/minute per token bucket (default: 5)
+  HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
+  HERMES_BRIDGE_BIND_ADDR : Bind bridge API (default: 127.0.0.1)
+  HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1)
+  HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
 """
 import json, sys, os, re, hashlib, asyncio, signal as sig_mod, time, logging
 from datetime import datetime, timezone
@@ -499,7 +531,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/5.2.0"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/2.3.0"})
             data = resp.json()
 
         results = []
@@ -757,7 +789,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="5.2.0",
+        version="2.3.0",
         lifespan=_bridge_lifespan,
     )
 
@@ -790,7 +822,7 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure."""
-        return {"status": "ok", "version": "5.2.0"}
+        return {"status": "ok", "version": "2.3.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -831,7 +863,7 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"\U0001f52e Hermes MCP Server v4.1", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v2.3.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)

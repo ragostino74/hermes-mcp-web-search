@@ -104,7 +104,21 @@ e il versionamento segue [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-[Unreleased]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.2.0...HEAD
+## [v2.3.0] — 2026-05-16
+
+### 🛡️ Sicurezza (CRITICAL + HIGH)
+
+- **Fix SSRF via redirect** (CVSS 9.8): disabilitato `follow_redirects=True` in `read_webpage()` e health check SearXNG, sostituito con loop manuale max 3 redirect verificati da `_is_safe_url()` su ogni hop
+- **DNS Rebinding Protection**: riattivata (`enable_dns_rebinding_protection=True`) nel TransportSecuritySettings di FastMCP
+- **CORS hardening** (CVSS 7.5): wildcard `"*"` sostituita con origins configurabili via `HERMES_MCP_CORS_ORIGINS` (default: localhost:*) per bridge e MCP HTTP server
+
+### ⚡ Performance
+
+- **Timeout granulare** (MEDIUM): deep search timeout cambiato da `180s` flat a `httpx.Timeout(connect=30, read=60, write=30, pool=5)` — previene thread-pool saturation DoS
+
+---
+
+[Unreleased]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.3.0...HEAD
 [v2.2.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.1.2...v2.2.0
 [v2.1.2]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.1.1...v2.1.2
 [v2.1.1]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.1.0...v2.1.1
@@ -113,4 +127,5 @@ e il versionamento segue [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 [v1.2.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.1.1...v1.2.0
 [v1.1.1]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.1.0...v1.1.1
 [v1.1.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.0.0...v1.1.0
+[v2.3.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v2.2.0...v2.3.0
 [v1.0.0]: https://github.com/ragostino74/hermes-mcp-server/releases/tag/v1.0.0
