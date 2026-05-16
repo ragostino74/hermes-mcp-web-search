@@ -1,4 +1,4 @@
-# Hermes MCP Web Search Server
+# Hermes MCP Server
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web alla tua AI.  
 Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di cercare informazioni su internet usando la potenza del tuo LLM locale per la sintesi.
