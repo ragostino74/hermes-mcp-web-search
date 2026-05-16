@@ -48,7 +48,26 @@ python hermes_mcp_server.py
 | `LLM_MODEL` | `Qwen3.6-35B-A3B-Q8_0.gguf` | Nome del modello da usare per la sintesi |
 | `HERMES_MCP_TRANSPORT` | `stdio` | Modalità di trasporto: `stdio`, `http`, o `dual` |
 | `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP |
-| `HERMES_BRIDGE_URL` | `http://localhost:18760` | URL del bridge Hermes Agent (opzionale) |
+| `HERMES_BRIDGE_URL` | *(disabilitato)* | URL del bridge Hermes Agent (opzionale). Di default vuoto per evitare collisioni con la porta MCP. Vedi sotto per abilitarlo su un'altra porta. |
+
+## Abilitare il Bridge Hermes Agent su Porta Diversa
+
+Di default `hermes_search` è disabilitato per evitare collisioni con la porta del server MCP (18760). Per riattivarlo, punta `HERMES_BRIDGE_URL` a un **host:porta diversa**:
+
+```bash
+# Esempio: bridge su localhost:8081 (non 18760!)
+export HERMES_BRIDGE_URL="http://localhost:8081"
+
+# Oppure su IP diverso
+export HERMES_BRIDGE_URL="http://192.168.1.100:8081"
+
+# Poi avvia il server (bridge sarà attivo)
+python hermes_mcp_server.py
+```
+
+Al startup vedrai nello stderr:
+- `Bridge status: connected` se l'endpoint `/health` risponde
+- `Bridge: unavailable (...)` se non è raggiungibile (fallback su DDG+LLM)
 
 ## Integrazione con llama.cpp WebUI
 

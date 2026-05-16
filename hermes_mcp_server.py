@@ -47,13 +47,60 @@ TRANSPORT = os.environ.get("HERMES_MCP_TRANSPORT", "stdio")
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "")
+def _is_safe_url(url: str) -> bool:
+    """Block access to localhost, private IPs, link-local, metadata endpoints."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    
+    # Block by hostname
+    blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    if host in blocked_hosts:
+        return False
+    
+    # Resolve IP to catch localhost aliases
+    import socket
+    try:
+        addrinfo = socket.getaddrinfo(host, None)
+        for family, socktype, proto, canonname, sockaddr in addrinfo:
+            ip = sockaddr[0]
+            # Block loopback (127.x.x.x)
+            if ip.startswith("127."):
+                return False
+            # Block IPv6 loopback
+            if ip == "::1" or ip == "fe80::1":
+                return False
+            # Block private ranges (RFC 1918)
+            if ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172."):
+                # 172.16.0.0 - 172.31.255.255
+                parts = ip.split(".")
+                if len(parts) == 4 and 16 <= int(parts[1]) <= 31:
+                    return False
+            # Block link-local (169.254.x.x)
+            if ip.startswith("169.254."):
+                return False
+            # Block metadata endpoints
+            if ip.startswith("169.254.") or ip == "0.0.0.0":
+                return False
+    except (socket.gaierror, OSError):
+        # If DNS resolution fails, block to be safe
+        return False
+    
+    return True
 
-_cache = {}
+_cache: dict[str, dict] = {}  # Simple dict with LRU eviction
+_CACHE_MAX_SIZE = 100
 _CACHE_TTL = 1800
 
 
 def _cache_key(text):
     return hashlib.md5(text.encode()).hexdigest()
+
+
+def _evict_lru():
+    """Remove oldest entry when cache is full (FIFO eviction for simplicity)."""
+    if len(_cache) >= _CACHE_MAX_SIZE:
+        oldest_key = next(iter(_cache))
+        del _cache[oldest_key]
 
 
 def _get_cached(key):
@@ -64,6 +111,9 @@ def _get_cached(key):
 
 
 def _set_cache(key, data):
+    """Cache with TTL and LRU eviction (max 100 entries)."""
+    # Evict oldest if at capacity
+    _evict_lru()
     _cache[key] = {"data": data, "time": datetime.now(timezone.utc)}
 
 
@@ -199,6 +249,8 @@ async def read_webpage(url: str) -> str:
     """Leggi il contenuto di una pagina web con riassunto LLM."""
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": "URL invalido"}, indent=2)
+    if not _is_safe_url(url):
+        return json.dumps({"error": "Accesso bloccato: localhost, IP privati e link-local non sono permessi"}, indent=2)
     try:
         with httpx.Client(timeout=30) as client:
             resp = client.get(
