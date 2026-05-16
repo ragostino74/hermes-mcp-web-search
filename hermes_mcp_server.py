@@ -60,19 +60,44 @@ SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
 _MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "127.0.0.1")  # MCP HTTP transport
 _BRIDGE_BIND_ADDR = os.environ.get("HERMES_BRIDGE_BIND_ADDR", "127.0.0.1")  # Bridge REST API
 def _is_safe_url(url: str) -> bool:
-    """Block access to localhost, private IPs, link-local, metadata endpoints."""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
+    """Block access to localhost, private IPs, link-local, metadata endpoints.
 
-    # Block by hostname
-    blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-    if host in blocked_hosts:
+    Also blocks IDN homograph attacks (e.g., xn--p1ai lookalikes), Unicode
+    confusion characters, and punycode-encoded hostnames that could bypass
+    hostname-based allowlists via visual spoofing.
+    """
+    import socket
+
+    parsed = urlparse(url)
+    raw_host = (parsed.hostname or "").lower()
+
+    # ── IDN Homograph / Punycode pre-check ──────────────────────────────
+    # If the hostname contains 'xn--', it's a punycode-encoded domain.
+    # These can be used to visually spoof legitimate domains (e.g.,
+    # "amazоn.com" with Cyrillic о vs Latin o, or xn-- domains that
+    # look like English words). Block all punycode hostnames as a
+    # defense-in-depth measure.
+    if "xn--" in raw_host:
         return False
 
-    # Resolve IP to catch localhost aliases
-    import socket
+    # Check for Unicode confusion / homoglyph characters (non-ASCII chars
+    # that look like ASCII but resolve differently in IDN contexts):
+    #   - Cyrillic о (U+043E) looks like Latin o
+    #   - Greek ω (U+03C9), Arabic waw, etc.
+    # If the hostname contains ANY non-ASCII character after punycode check,
+    # it's potentially a homograph attack.
+    for ch in raw_host:
+        if ord(ch) > 127:
+            return False
+
+    # Block by hostname (ASCII-safe after above checks)
+    blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    if raw_host in blocked_hosts:
+        return False
+
+    # Resolve IP to catch localhost aliases and expand punycode
     try:
-        addrinfo = socket.getaddrinfo(host, None)
+        addrinfo = socket.getaddrinfo(raw_host, None)
         for family, socktype, proto, canonname, sockaddr in addrinfo:
             ip = sockaddr[0]
 
@@ -134,8 +159,15 @@ _CACHE_MAX_SIZE = 100
 _CACHE_TTL = 1800
 
 
-def _cache_key(text):
-    return hashlib.md5(text.encode()).hexdigest()
+def _cache_key(text: str) -> str:
+    """Compute a non-cryptographic-ish hash for cache keying.
+
+    Uses SHA-256 (not MD5) to prevent intentional collision attacks that could
+    poison the search result cache with forged responses.  CRC32 would suffice
+    for correctness but SHA-256 is fast enough and guards against malicious
+    inputs designed to collide under weak hash functions.
+    """
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _evict_lru():
@@ -388,7 +420,11 @@ def _sanitize_search_result(text: str, max_len: int = 2000) -> str:
 
 
 def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: float = 0.3) -> str:
-    """Use local llama.cpp to summarize content."""
+    """Use local llama.cpp to summarize content.
+
+    This is a SYNC function called via _external_call() which wraps it in
+    asyncio.to_thread()/run_in_executor to prevent blocking the event loop.
+    """
     try:
         import http.client as hc
         p = urlparse(LLM_ENDPOINT)
@@ -412,8 +448,8 @@ def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: f
         c.close()
         if data.get("choices"):
             return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        sys.stderr.write(f"LLM summarize error: {e}\n")
+    except Exception:
+        sys.stderr.write("LLM summarize error: [hidden]\n")
     return ""
 
 
@@ -439,8 +475,9 @@ def _search_ddg(query, max_results=5):
         }
         _set_cache(ck, result)
         return result
-    except Exception as e:
-        return {"error": str(e), "results": []}
+    except Exception:
+        sys.stderr.write("DDG search error: [hidden]\n")
+        return {"error": "Ricerca fallita (errore interno)", "results": []}
 
 
 def _search_searxng(query, max_results=5):
@@ -481,8 +518,8 @@ def _search_searxng(query, max_results=5):
         }
         _set_cache(ck, result)
         return result
-    except Exception as e:
-        sys.stderr.write(f"SearXNG error: {e}\n")
+    except Exception:
+        sys.stderr.write("SearXNG error: [hidden]\n")
         return None
 
 
@@ -654,7 +691,10 @@ async def read_webpage(url: str) -> str:
             indent=2,
         )
     except Exception as e:
-        return json.dumps({"error": str(e), "url": url}, indent=2)
+        return json.dumps({
+            "error": "Errore durante la lettura della pagina",
+            "url": url,
+        }, indent=2)
 
 
 # ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
@@ -708,14 +748,8 @@ if HAS_FASTAPI:
 
     @bridge_app.get("/health")
     async def health():
-        """Health check endpoint."""
-        return {
-            "status": "ok",
-            "version": "4.1.0",
-            "rate_limit_max": _RATE_LIMIT_MAX,
-            "concurrency_max": _SEMAPHORE_MAX,
-            "token_bucket_available": _rate_limiter is not None,
-        }
+        """Health check endpoint — minimal info, no config disclosure."""
+        return {"status": "ok", "version": "4.1.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -747,8 +781,8 @@ async def _start_http_bridge():
         t = asyncio.create_task(server.serve())
         sys.stderr.write(f"Bridge: listening on {_BRIDGE_BIND_ADDR}:{_BRIDGE_PORT}\n")
         return t
-    except Exception as e:
-        sys.stderr.write(f"Bridge: failed to start ({e})\n")
+    except Exception:
+        sys.stderr.write("Bridge: failed to start [hidden]\n")
         return None
 
 
