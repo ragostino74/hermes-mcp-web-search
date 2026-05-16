@@ -151,6 +151,7 @@ def _set_cache(key, data):
 # ── Rate Limiter / External Call Guard ───────────────────────────────────
 import asyncio
 from contextlib import asynccontextmanager
+import threading
 
 _RATE_LIMIT_MAX = int(os.environ.get("HERMES_MCP_RATE_LIMIT", "5"))       # calls/minute
 _RATE_LIMIT_WINDOW = 60                                                     # seconds
@@ -166,35 +167,68 @@ except ImportError:
 # Semaphore: hard cap on concurrent external calls
 _external_sem = asyncio.Semaphore(_SEMAPHORE_MAX)
 
+# Track whether we're inside a @rate_limited wrapper to avoid double-semaphore acquisition
+_rate_limit_ctx = threading.local()
+
+
+def _run_in_executor(fn, *args, **kwargs):
+    """Run sync callable in event-loop threadpool. Returns a coroutine."""
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
 
 async def _external_call(fn, *args, **kwargs):
     """Run a sync callable inside semaphore + token-bucket guard.
 
-    Meant to be awaited by async callers (MCP tools, FastAPI routes).
+    Meant to be awaited by async callers (MCP tools). When called from within
+    a @rate_limited wrapper it skips the semaphore (already held) and only
+    applies the token bucket per call.
+
     If ``aiolimiter`` is unavailable only the semaphore applies.
     """
-    async with _external_sem:
-        if _rate_limiter is not None:
-            async with _rate_limiter:
-                return await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: fn(*args, **kwargs))
-        else:
-            return await asyncio.get_running_loop().run_in_executor(
-                None, lambda: fn(*args, **kwargs))
+    # Check if we're already inside a @rate_limited wrapper (semaphore held).
+    # Nested external calls must skip sem to avoid deadlock.
+    already_gated = getattr(_rate_limit_ctx, "active", False)
+
+    if not already_gated:
+        # Outer call path: acquire semaphore + token bucket
+        async with _external_sem:
+            if _rate_limiter is not None:
+                async with _rate_limiter:
+                    return await _run_in_executor(fn, *args, **kwargs)
+            else:
+                return await _run_in_executor(fn, *args, **kwargs)
+
+    # Inner call path (inside @rate_limited): only token bucket.
+    # Semaphore is already held by the decorator.
+    if _rate_limiter is not None:
+        async with _rate_limiter:
+            return await _run_in_executor(fn, *args, **kwargs)
+    else:
+        return await _run_in_executor(fn, *args, **kwargs)
 
 
 def rate_limited(fn):
-    """Decorator: wraps any async function under semaphore + token bucket."""
+    """Decorator: wraps any async function under semaphore + token bucket.
+
+    Holds the semaphore for the entire duration of the wrapped function so
+    that nested calls to _external_call() detect we're already gated and
+    skip their own semaphore acquisition (preventing deadlock).
+
+    The token bucket is applied inside each external call via _external_call().
+    """
     import functools
 
     @functools.wraps(fn)
     async def wrapper(*a, **kw):
+        # Acquire semaphore for the entire function body.
+        # Nested calls via _external_call() see active=True and skip sem.
         async with _external_sem:
-            if _rate_limiter is not None:
-                async with _rate_limiter:
-                    return await fn(*a, **kw)
-            else:
+            _rate_limit_ctx.active = True
+            try:
                 return await fn(*a, **kw)
+            finally:
+                _rate_limit_ctx.active = False
 
     return wrapper
 
@@ -532,14 +566,16 @@ if HAS_FASTAPI:
         }
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
+    @rate_limited
     async def api_search(query: str = Query(..., description="Search query"), max_results: int = 5):
-        """Web search API endpoint (rate-limited, SearXNG/duckduckgo)."""
+        """Web search API endpoint (rate-limited via token bucket + semaphore)."""
         result = await _external_call(_search_web, query, min(max(1, max_results), 10))
         return result
 
     @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
+    @rate_limited
     async def api_deep_search(query: str = Query(..., description="Search query")):
-        """Deep search API endpoint (rate-limited, uses LLM summarization)."""
+        """Deep search API endpoint (rate-limited via token bucket + semaphore)."""
         return await _external_call(_summarize_with_llm, query)
 
 
