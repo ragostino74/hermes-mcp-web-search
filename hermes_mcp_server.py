@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v5.0.0 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v1.4.0 — Web Search & LLM Synthesis Bridge
 
 MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -535,7 +535,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/5.0.0"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.4.0"})
             data = resp.json()
 
         results = []
@@ -793,7 +793,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="5.0.0",
+        version="1.4.0",
         lifespan=_bridge_lifespan,
     )
 
@@ -827,7 +827,7 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "5.0.0"}
+        return {"status": "ok", "version": "1.4.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -886,7 +886,7 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"🔮 Hermes MCP Server v5.0.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.4.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)

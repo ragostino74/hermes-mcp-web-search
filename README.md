@@ -1,4 +1,4 @@
-# Hermes MCP Server v5.0.0
+# Hermes MCP Server v1.4.0
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web alla tua AI.  
 Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di cercare informazioni su internet usando la potenza del tuo LLM locale per la sintesi.
@@ -81,7 +81,7 @@ Il bridge espone un'API REST su `http://localhost:<HERMES_MCP_BRIDGE_PORT>` per 
 
 | Endpoint | Metodo | Descrizione |
 |----------|--------|-------------|
-| `/health` | GET | Health check — restituisce `{"status": "ok", "version": "5.0.0"}` (rate-limited) |
+| `/health` | GET | Health check — restituisce `{"status": "ok", "version": "1.4.0"}` (rate-limited) |
 | `/api/search` | GET/POST | Web search con parametri `query` e `max_results` |
 | `/api/deep-search` | GET/POST | Deep research: query + web search + analisi LLM strutturata |
 
