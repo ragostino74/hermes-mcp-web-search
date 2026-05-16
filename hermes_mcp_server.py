@@ -460,8 +460,8 @@ async def web_search(query: str, max_results: int = 5) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp_server.tool()
 @rate_limited
+@mcp_server.tool()
 async def deep_search(query: str) -> str:
     """Ricerca profonda con analisi del tuo LLM locale."""
     query = query.strip()
@@ -484,8 +484,8 @@ async def deep_search(query: str) -> str:
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
-@mcp_server.tool()
 @rate_limited
+@mcp_server.tool()
 async def read_webpage(url: str) -> str:
     """Leggi il contenuto di una pagina web con riassunto LLM."""
     if not url.startswith(("http://", "https://")):
