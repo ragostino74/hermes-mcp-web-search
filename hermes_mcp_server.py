@@ -9,9 +9,16 @@ Uso HTTP (per llama.cpp WebUI e altri client browser):
   HERMES_MCP_TRANSPORT=http HERMES_MCP_PORT=18760 \
     python hermes_mcp_server.py
 """
-import json, sys, os, re, hashlib, asyncio, signal as sig_mod
+import json, sys, os, re, hashlib, asyncio, signal as sig_mod, time, logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+# Structured request logger for bridge API (audit trail)
+_audit_logger = logging.getLogger("hermes.bridge.audit")
+_audit_handler = logging.StreamHandler(sys.stderr)
+_audit_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [AUDIT] %(message)s"))
+_audit_logger.addHandler(_audit_handler)
+_audit_logger.setLevel(logging.INFO)
 
 try:
     from mcp.server import Server
@@ -48,6 +55,10 @@ LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
+
+# ── Server bind addresses (default localhost for security) ────────
+_MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "127.0.0.1")  # MCP HTTP transport
+_BRIDGE_BIND_ADDR = os.environ.get("HERMES_BRIDGE_BIND_ADDR", "127.0.0.1")  # Bridge REST API
 def _is_safe_url(url: str) -> bool:
     """Block access to localhost, private IPs, link-local, metadata endpoints."""
     parsed = urlparse(url)
@@ -512,7 +523,7 @@ except ImportError:
 if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
     mcp_server = FastMCP(
         name="hermes-web-mcp",
-        host="0.0.0.0",
+        host=_MCP_BIND_ADDR,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=False,
         ),
@@ -677,6 +688,24 @@ if HAS_FASTAPI:
         allow_headers=["*"],
     )
 
+    # ── Request audit logging (middleware: fires after CORS) ──────
+    @bridge_app.middleware("http")
+    async def audit_middleware(request, call_next):
+        start = time.monotonic()
+        method = request.method
+        path = request.url.path
+        query_str = request.url.query if request.url.query else "-"
+
+        response = await call_next(request)
+
+        elapsed_ms = (time.monotonic() - start) * 1000
+        client_ip = request.client.host if request.client else "-"
+        _audit_logger.info(
+            "%s %s?%s → %d (%.0fms) client=%s",
+            method, path, query_str[:200], response.status_code, elapsed_ms, client_ip
+        )
+        return response
+
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint."""
@@ -713,10 +742,10 @@ async def _start_http_bridge():
         return
     try:
         import uvicorn
-        config = uvicorn.Config(bridge_app, host="0.0.0.0", port=_BRIDGE_PORT, log_level="warning")
+        config = uvicorn.Config(bridge_app, host=_BRIDGE_BIND_ADDR, port=_BRIDGE_PORT, log_level="warning")
         server = uvicorn.Server(config)
         t = asyncio.create_task(server.serve())
-        sys.stderr.write(f"Bridge: listening on :{_BRIDGE_PORT}\n")
+        sys.stderr.write(f"Bridge: listening on {_BRIDGE_BIND_ADDR}:{_BRIDGE_PORT}\n")
         return t
     except Exception as e:
         sys.stderr.write(f"Bridge: failed to start ({e})\n")
@@ -797,7 +826,7 @@ async def main():
             )
 
             import uvicorn
-            config = uvicorn.Config(cors_app, host="0.0.0.0", port=port, log_level="info")
+            config = uvicorn.Config(cors_app, host=_MCP_BIND_ADDR, port=port, log_level="info")
             server = uvicorn.Server(config)
 
             # Shared shutdown signal — replaces sys.exit(0) in signal handlers
