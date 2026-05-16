@@ -441,8 +441,8 @@ async def get_current_datetime() -> str:
     }, ensure_ascii=False)
 
 
-@rate_limited
 @mcp_server.tool()
+@rate_limited
 async def web_search(query: str, max_results: int = 5) -> str:
     """Ricerca informazioni su internet (SearXNG / DuckDuckGo) + sintesi LLM."""
     query = query.strip()
@@ -460,8 +460,8 @@ async def web_search(query: str, max_results: int = 5) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@rate_limited
 @mcp_server.tool()
+@rate_limited
 async def deep_search(query: str) -> str:
     """Ricerca profonda con analisi del tuo LLM locale."""
     query = query.strip()
@@ -484,8 +484,8 @@ async def deep_search(query: str) -> str:
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
-@rate_limited
 @mcp_server.tool()
+@rate_limited
 async def read_webpage(url: str) -> str:
     """Leggi il contenuto di una pagina web con riassunto LLM."""
     if not url.startswith(("http://", "https://")):
