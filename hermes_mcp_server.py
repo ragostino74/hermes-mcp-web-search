@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v2.3.0 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v5.0.0 — Web Search & LLM Synthesis Bridge
 
 MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -191,15 +191,19 @@ _CACHE_MAX_SIZE = 100
 _CACHE_TTL = 1800
 
 
-def _cache_key(text: str) -> str:
-    """Compute a non-cryptographic-ish hash for cache keying.
+# ── Cache salt (anti-poisoning): random per-process, prevents targeted eviction ──
+_CACHE_SALT = os.urandom(16).hex()
 
-    Uses SHA-256 (not MD5) to prevent intentional collision attacks that could
-    poison the search result cache with forged responses.  CRC32 would suffice
-    for correctness but SHA-256 is fast enough and guards against malicious
-    inputs designed to collide under weak hash functions.
+
+def _cache_key(text: str) -> str:
+    """Compute a cache key with process salt to prevent cache poisoning attacks.
+
+    Salt makes it impossible for an attacker to predict or target specific
+    cache entries (mitigates CVE-level cache eviction amplification).
+    The salt is per-process — each restart generates a new random value.
+    Uses SHA-256 (not MD5) to prevent intentional collision attacks.
     """
-    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    return hashlib.sha256((_CACHE_SALT + text).encode("utf-8", errors="replace")).hexdigest()
 
 
 def _evict_lru():
@@ -531,7 +535,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/2.3.0"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/5.0.0"})
             data = resp.json()
 
         results = []
@@ -789,7 +793,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="2.3.0",
+        version="5.0.0",
         lifespan=_bridge_lifespan,
     )
 
@@ -819,10 +823,11 @@ if HAS_FASTAPI:
         )
         return response
 
+    @rate_limited
     @bridge_app.get("/health")
     async def health():
-        """Health check endpoint — minimal info, no config disclosure."""
-        return {"status": "ok", "version": "2.3.0"}
+        """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
+        return {"status": "ok", "version": "5.0.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -835,9 +840,27 @@ if HAS_FASTAPI:
     @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
     @rate_limited
     async def api_deep_search(query: str = Query(..., description="Search query")):
-        """Deep search API endpoint (rate-limited via token bucket + semaphore)."""
+        """Deep search API endpoint — runs web search first, then LLM analysis. Rate-limited."""
         safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
-        return await _external_call(_summarize_with_llm, safe_query)
+        # First: run actual web search to gather results (not just LLM hallucination)
+        search_result = await _external_call(_search_web, safe_query)
+        raw_content = "\n---\n".join([
+            f"# {_sanitize_search_result(r['title'], 200)}\n{_sanitize_search_result(r.get('snippet', ''), 500)}"
+            for r in search_result.get("results", [])
+        ])
+        # Then: LLM analysis of actual search results
+        llm_prompt = (
+            f'Sei un assistente AI. Analizza questi risultati per: {safe_query}\n\n'
+            f"Risultati:\n{raw_content[:8000]}\n\n"
+            "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
+        )
+        llm_answer = await _external_call(_summarize_with_llm, llm_prompt)
+        return {
+            "query": safe_query,
+            "search_results_count": len(search_result.get("results", [])),
+            "llm_analysis": llm_answer or "LLM summarization not available",
+            "source_results": search_result.get("results", []),
+        }
 
 
 # ── Startup helpers ──────────────────────────────────────────────────────
@@ -863,7 +886,7 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"🔮 Hermes MCP Server v2.3.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v5.0.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)

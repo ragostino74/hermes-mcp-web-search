@@ -1,4 +1,4 @@
-# Hermes MCP Server
+# Hermes MCP Server v5.0.0
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web alla tua AI.  
 Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di cercare informazioni su internet usando la potenza del tuo LLM locale per la sintesi.
@@ -45,13 +45,19 @@ python hermes_mcp_server.py
 
 ## Configurazione Environment Variables
 
-| Variable | Default | Descrizione |
+| Variabile | Default | Descrizione |
 |----------|---------|-------------|
-| `LLM_ENDPOINT` | `http://localhost:10000/v1` | Endpoint del server LLM locale |
+| `LLM_ENDPOINT` | `http://localhost:10000/v1` | Endpoint del server LLM locale (OpenAI-compatible) |
 | `LLM_MODEL` | `Qwen3.6-35B-A3B-Q8_0.gguf` | Nome del modello da usare per la sintesi |
+| `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, motore principale con fallback su DuckDuckGo. Es: `http://10.0.0.154:8888` |
 | `HERMES_MCP_TRANSPORT` | `stdio` | Modalità di trasporto: `stdio`, `http`, o `dual` |
-| `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP |
-| `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, viene usata come motore di ricerca principale con fallback automatico su DuckDuckGo. Esempio: `http://10.0.0.154:8888` |
+| `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP/StreamableHTTP |
+| `HERMES_MCP_BRIDGE_PORT` | `18761` | Porta per la Bridge REST API (integrazioni esterne) |
+| `HERMES_MCP_RATE_LIMIT` | `5` | Max chiamate/minute per token bucket (rate limiting) |
+| `HERMES_MCP_CONCURRENCY` | `3` | Max chiamate HTTP parallele (semaphore cap) |
+| `HERMES_MCP_CORS_ORIGINS` | `http://localhost:*,https://localhost:*` | CORS origins, comma-separated. Imposta a `[]` per same-origin-only |
+| `HERMES_MCP_BIND_ADDR` | `127.0.0.1` | Bind IP per il server MCP HTTP |
+| `HERMES_BRIDGE_BIND_ADDR` | `127.0.0.1` | Bind IP per la bridge API REST |
 
 ## Integrazione con llama.cpp WebUI
 
@@ -69,21 +75,15 @@ Lo script supporta anche la modalità **stdio** per:
 - **VS Code** — estensioni MCP
 - Qualsiasi altro client che supporti il protocollo MCP via stdio
 
-| `HERMES_MCP_BRIDGE_PORT` | `18761` | Porta per la Bridge REST API |
-| `HERMES_MCP_RATE_LIMIT` | `5` | Max chiamate/minute (token bucket) |
-| `HERMES_MCP_CONCURRENCY` | `3` | Max chiamate HTTP parallele |
-| `HERMES_MCP_CORS_ORIGINS` | `http://localhost:*,https://localhost:*` | CORS origins, comma-separated. Imposta a `[]` per same-origin-only |
-| `LLM_ENDPOINT` | `http://localhost:10000/v1` | Endpoint del server LLM locale (OpenAI-compatible) |
-
 ## Bridge REST API
 
 Il bridge espone un'API REST su `http://localhost:<HERMES_MCP_BRIDGE_PORT>` per integrazioni esterne:
 
 | Endpoint | Metodo | Descrizione |
 |----------|--------|-------------|
-| `/health` | GET | Health check — restituisce `{"status": "ok", "version": "2.3.0"}` |
+| `/health` | GET | Health check — restituisce `{"status": "ok", "version": "5.0.0"}` (rate-limited) |
 | `/api/search` | GET/POST | Web search con parametri `query` e `max_results` |
-| `/api/deep-search` | GET/POST | Deep research: query + analisi LLM strutturata |
+| `/api/deep-search` | GET/POST | Deep research: query + web search + analisi LLM strutturata |
 
 Esempio di richiesta:
 ```bash
@@ -93,21 +93,23 @@ curl "http://localhost:18761/api/search?query=ultime+notizie+AI"
 ## Sicurezza
 
 - **SSRF Protection**: blocco accesso a localhost, IP privati (RFC 1918), link-local, IPv6 ULA/link-local, e metadata cloud endpoints (169.254.169.254)
-- **Redirect safety**: i redirect HTTP sono limitati a 3 salti con verifica `_is_safe_url()` su ogni hop
+- **Redirect safety**: i redirect HTTP sono limitati a 3 salti con verifica `_is_safe_url()` su ogni hop (`follow_redirects=False` di default)
 - **DNS Rebinding Protection**: attiva di default nel framework MCP
 - **CORS configurabile**: origins limitate a localhost per default, estendibili via `HERMES_MCP_CORS_ORIGINS`
 - **Rate Limiting**: token bucket (configurabile) + semaphore per prevenire saturazione risorse
 - **Prompt Injection Sanitization**: pipeline a 3 fasi su tutto il testo esterno
+- **Cache Poisoning Protection**: chiave di cache con salt casuale per-processo (anti-targeted eviction)
 
 ## Struttura del Progetto
 
 ```
-hermes-mcp-web-search/
-├── hermes_mcp_server.py    # Server principale (stdio + HTTP)
-├── README.md
-├── LICENSE
+hermes-mcp-server/
+├── hermes_mcp_server.py    # Server principale (stdio + HTTP/StreamableHTTP)
+├── README.md               # Documentazione e configurazione
+├── SKILL.md                # Skill per Hermes Agent
+├── LICENSE                 # Licenza MIT
 ├── .gitignore
-└── requirements.txt
+└── requirements.txt        # Dipendenze Python
 ```
 
 ## Licenza
