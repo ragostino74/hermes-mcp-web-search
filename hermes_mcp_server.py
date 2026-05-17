@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.5.0 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v1.5.1 — Web Search & LLM Synthesis Bridge
 
 MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -534,8 +534,8 @@ def _search_searxng(query, max_results=5):
             "language": "it",
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
-        with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.4.0"})
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=15)) as client:
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.5.1"})
             data = resp.json()
 
         results = []
@@ -794,7 +794,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="1.5.0",
+        version="1.5.1",
         lifespan=_bridge_lifespan,
     )
 
@@ -828,7 +828,7 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "1.5.0"}
+        return {"status": "ok", "version": "1.5.1"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -895,7 +895,7 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"🔮 Hermes MCP Server v1.5.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.5.1", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
@@ -933,8 +933,10 @@ async def main():
             except Exception as e:
                 print(f"   Bridge: unavailable ({e})", file=sys.stderr)
 
+   # Non-blocking LLM startup probe (runs in threadpool to avoid blocking event loop)
+    loop = asyncio.get_running_loop()
     try:
-        llm_summary = _summarize_with_llm("Rispondi solo 'OK'", max_tokens=5)
+        llm_summary = await loop.run_in_executor(None, _summarize_with_llm, "Rispondi solo 'OK'", 5)
         if llm_summary == "OK":
             print(f"   Local LLM: connected ({LLM_MODEL})", file=sys.stderr)
         else:
