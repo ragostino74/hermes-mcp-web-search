@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.5.0 — Web Search & LLM Synthesis Bridge + Scientific Computing Suite
+Hermes MCP Server v1.5.2 — Web Search & LLM Synthesis Bridge + Scientific Computing Suite
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web e calcolo scientifico:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -569,8 +569,8 @@ def _search_searxng(query, max_results=5):
             "language": "it",
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
-        with httpx.Client(timeout=20) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.5.0"})
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=15), follow_redirects=False) as client:
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.5.2"})
             data = resp.json()
 
         results = []
@@ -1546,6 +1546,7 @@ async def statistics(
 
 # ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
 _BRIDGE_PORT = int(os.environ.get("HERMES_MCP_BRIDGE_PORT", "18761"))
+_BRIDGE_TOKEN = os.environ.get("HERMES_MCP_BRIDGE_TOKEN", "")  # Optional Bearer auth for bridge API
 
 try:
     from fastapi import FastAPI, Query
@@ -1575,7 +1576,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="1.5.0",
+        version="1.5.2",
         lifespan=_bridge_lifespan,
     )
 
@@ -1583,7 +1584,7 @@ if HAS_FASTAPI:
         CORSMiddleware,
         allow_origins=cors_origins_list,  # HIGH #3: Configurable via HERMES_MCP_CORS_ORIGINS
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
+        allow_headers=["Content-Type", "Authorization"],
         allow_credentials=True,  # Required for cookies/auth when origins are restricted
     )
 
@@ -1610,19 +1611,28 @@ if HAS_FASTAPI:
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
         return {"status": "ok", "version": "1.5.0"}
+        return {"status": "ok", "version": "1.5.2"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
-    async def api_search(query: str = Query(..., description="Search query"), max_results: int = 5):
+    async def api_search(request, query: str = Query(..., description="Search query"), max_results: int = 5):
         """Web search API endpoint (rate-limited via token bucket + semaphore)."""
+        if _BRIDGE_TOKEN:
+            auth = request.headers.get("Authorization")
+            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
+                return {"error": "unauthorized"}, 401
         safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
         result = await _external_call(_search_web, safe_query, min(max(1, max_results), 10))
         return result
 
     @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
     @rate_limited
-    async def api_deep_search(query: str = Query(..., description="Search query")):
+    async def api_deep_search(request, query: str = Query(..., description="Search query")):
         """Deep search API endpoint — runs web search first, then LLM analysis. Rate-limited."""
+        if _BRIDGE_TOKEN:
+            auth = request.headers.get("Authorization")
+            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
+                return {"error": "unauthorized"}, 401
         safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
         # First: run actual web search to gather results (not just LLM hallucination)
         search_result = await _external_call(_search_web, safe_query)
@@ -1669,38 +1679,48 @@ async def main():
     _bridge_task = await _start_http_bridge()
 
     print(f"🔮 Hermes MCP Server v1.5.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.5.2", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
 
     # SearXNG status check
     if SEARXNG_URL and HTTPX_AVAILABLE:
-        try:
-            with httpx.Client(timeout=5) as c:
-                # CRITICAL #1b: No redirect following — prevents SSRF via metadata endpoint (169.254.169.254)
-                r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=False)
-                if r.status_code == 200 and isinstance(r.json(), dict):
-                    print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
-                else:
-                    print(f"   SearXNG: responding (status {r.status_code})", file=sys.stderr)
-        except Exception as e:
-            print(f"   SearXNG: unreachable, using DuckDuckGo fallback ({e})", file=sys.stderr)
+        if not _is_safe_url(SEARXNG_URL):
+            print(f"   SearXNG: blocked unsafe URL", file=sys.stderr)
+        else:
+            try:
+                with httpx.Client(timeout=5) as c:
+                    # CRITICAL #1b: No redirect following — prevents SSRF via metadata endpoint (169.254.169.254)
+                    r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=False)
+                    if r.status_code == 200 and isinstance(r.json(), dict):
+                        print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
+                    else:
+                        print(f"   SearXNG: responding (status {r.status_code})", file=sys.stderr)
+            except Exception as e:
+                print(f"   SearXNG: unreachable, using DuckDuckGo fallback ({e})", file=sys.stderr)
     elif DDG_AVAILABLE:
         print(f"   Search engine: DuckDuckGo (no SEARXNG_URL configured)", file=sys.stderr)
 
     if HERMES_BRIDGE_URL and HTTPX_AVAILABLE:
-        try:
-            with httpx.Client(timeout=3) as c:
-                r = c.get(f"{HERMES_BRIDGE_URL}/health")
-                print(
-                    f"   Bridge status: {r.json().get('status', 'unknown')}",
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            print(f"   Bridge: unavailable ({e})", file=sys.stderr)
+        if not _is_safe_url(HERMES_BRIDGE_URL):
+            print(f"   Bridge: blocked unsafe URL", file=sys.stderr)
+        else:
+            try:
+                with httpx.Client(timeout=3) as c:
+                    # follow_redirects=False prevents SSRF via redirect
+                    r = c.get(f"{HERMES_BRIDGE_URL}/health", follow_redirects=False)
+                    print(
+                        f"   Bridge status: {r.json().get('status', 'unknown')}",
+                        file=sys.stderr,
+                    )
+            except Exception as e:
+                print(f"   Bridge: unavailable ({e})", file=sys.stderr)
 
+   # Non-blocking LLM startup probe (runs in threadpool to avoid blocking event loop)
+    loop = asyncio.get_running_loop()
     try:
-        llm_summary = _summarize_with_llm("Rispondi solo 'OK'", max_tokens=5)
+        llm_summary = await loop.run_in_executor(None, _summarize_with_llm, "Rispondi solo 'OK'", 5)
         if llm_summary == "OK":
             print(f"   Local LLM: connected ({LLM_MODEL})", file=sys.stderr)
         else:
@@ -1734,7 +1754,7 @@ async def main():
                 app=mcp_app,
                 allow_origins=cors_origins_list,  # HIGH #3: Same list as bridge (configurable)
                 allow_methods=["POST", "OPTIONS"],
-                allow_headers=["*"],
+                allow_headers=["Content-Type", "Authorization"],
                 expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
             )
 

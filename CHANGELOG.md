@@ -11,6 +11,14 @@ e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.
 - **`get_current_datetime` removed**: Strumento spostato nel server dedicato
 [hermes-mcp-timedata](https://github.com/ragostino74/hermes-mcp-timedata) (porta 18762).
 
+### Merged from origin (v1.5.2)
+- **SSRF Redirect Chain Fix**: `deep_search` segue redirects con verifica `_is_safe_url()` su ogni hop.
+- **DNS Rebinding Re-Enabled**: Protezione riattivata per `read_webpage`, `deep_search`, `web_search`.
+- **CORS Restricted**: Default `localhost:*`, configurabile via `HERMES_MCP_CORS_ORIGINS`.
+- **Rate Limiting su Bridge API**: Token bucket aggiunto.
+- **Audit Logging**: Logging strutturato per bridge API.
+- **StreamableHTTP Transport**: Supporto `Accept: application/json, text/event-stream` e `Mcp-Session-Id`.
+
 ## [1.5.0] - 2026-05-17
 ### Added
 - **Scientific Computing Suite**: 8 nuovi strumenti di calcolo scientifico:
