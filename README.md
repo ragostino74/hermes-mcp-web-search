@@ -9,9 +9,6 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 - **deep_search** — Ricerca profonda con analisi strutturata dell'LLM
 - **read_webpage** — Legge e sintetizza pagine web
 
-Note: lo strumento `get_current_datetime` è stato spostato nel server dedicato
-[hermes-mcp-timedata](https://github.com/ragostino74/hermes-mcp-timedata).
-
 ## Requisiti
 
 - Python 3.11+
