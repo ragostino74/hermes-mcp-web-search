@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.4.0 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v1.4.1 — Web Search & LLM Synthesis Bridge
 
 MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -793,7 +793,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="1.4.0",
+        version="1.4.1",
         lifespan=_bridge_lifespan,
     )
 
@@ -827,7 +827,7 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "1.4.0"}
+        return {"status": "ok", "version": "1.4.1"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
@@ -886,36 +886,43 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"🔮 Hermes MCP Server v1.4.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.4.1", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
 
     # SearXNG status check
     if SEARXNG_URL and HTTPX_AVAILABLE:
-        try:
-            with httpx.Client(timeout=5) as c:
-                # CRITICAL #1b: No redirect following — prevents SSRF via metadata endpoint (169.254.169.254)
-                r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=False)
-                if r.status_code == 200 and isinstance(r.json(), dict):
-                    print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
-                else:
-                    print(f"   SearXNG: responding (status {r.status_code})", file=sys.stderr)
-        except Exception as e:
-            print(f"   SearXNG: unreachable, using DuckDuckGo fallback ({e})", file=sys.stderr)
+        if not _is_safe_url(SEARXNG_URL):
+            print(f"   SearXNG: blocked unsafe URL", file=sys.stderr)
+        else:
+            try:
+                with httpx.Client(timeout=5) as c:
+                    # CRITICAL #1b: No redirect following — prevents SSRF via metadata endpoint (169.254.169.254)
+                    r = c.get(SEARXNG_URL + "/search", params={"q": "test", "format": "json"}, follow_redirects=False)
+                    if r.status_code == 200 and isinstance(r.json(), dict):
+                        print(f"   SearXNG: connected ({SEARXNG_URL})", file=sys.stderr)
+                    else:
+                        print(f"   SearXNG: responding (status {r.status_code})", file=sys.stderr)
+            except Exception as e:
+                print(f"   SearXNG: unreachable, using DuckDuckGo fallback ({e})", file=sys.stderr)
     elif DDG_AVAILABLE:
         print(f"   Search engine: DuckDuckGo (no SEARXNG_URL configured)", file=sys.stderr)
 
     if HERMES_BRIDGE_URL and HTTPX_AVAILABLE:
-        try:
-            with httpx.Client(timeout=3) as c:
-                r = c.get(f"{HERMES_BRIDGE_URL}/health")
-                print(
-                    f"   Bridge status: {r.json().get('status', 'unknown')}",
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            print(f"   Bridge: unavailable ({e})", file=sys.stderr)
+        if not _is_safe_url(HERMES_BRIDGE_URL):
+            print(f"   Bridge: blocked unsafe URL", file=sys.stderr)
+        else:
+            try:
+                with httpx.Client(timeout=3) as c:
+                    # follow_redirects=False prevents SSRF via redirect
+                    r = c.get(f"{HERMES_BRIDGE_URL}/health", follow_redirects=False)
+                    print(
+                        f"   Bridge status: {r.json().get('status', 'unknown')}",
+                        file=sys.stderr,
+                    )
+            except Exception as e:
+                print(f"   Bridge: unavailable ({e})", file=sys.stderr)
 
     try:
         llm_summary = _summarize_with_llm("Rispondi solo 'OK'", max_tokens=5)
