@@ -5,6 +5,12 @@ Tutti i cambiamenti degni di nota in questo progetto saranno documentati in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-05-17
+
+### Breaking
+- **`get_current_datetime` removed**: Strumento spostato nel server dedicato
+[hermes-mcp-timedata](https://github.com/ragostino74/hermes-mcp-timedata) (porta 18762).
+
 ## [1.5.0] - 2026-05-17
 ### Added
 - **Scientific Computing Suite**: 8 nuovi strumenti di calcolo scientifico:

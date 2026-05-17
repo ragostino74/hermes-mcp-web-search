@@ -8,7 +8,9 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 - **web_search** — Ricerca rapida via SearXNG (se configurato) o DuckDuckGo + sintesi con il tuo LLM
 - **deep_search** — Ricerca profonda con analisi strutturata dell'LLM
 - **read_webpage** — Legge e sintetizza pagine web
-- **get_current_datetime** — Data e ora attuale in italiano (fuso Europe/Rome)
+
+Note: lo strumento `get_current_datetime` è stato spostato nel server dedicato
+[hermes-mcp-timedata](https://github.com/ragostino74/hermes-mcp-timedata).
 
 ## Requisiti
 

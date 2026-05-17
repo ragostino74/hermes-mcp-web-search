@@ -6,7 +6,10 @@ MCP (Model Context Protocol) server che espone strumenti di ricerca web e calcol
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
   - deep_search   : Ricerca profonda con analisi strutturata dell'LLM
   - read_webpage  : Lettura e sintesi LLM di pagine web (con SSRF guard)
-  - get_current_datetime : Data/ora in italiano (Europe/Rome)
+
+Note: lo strumento `get_current_datetime` è stato spostato nel server dedicato
+[hermes-mcp-timedata](https://github.com/ragostino74/hermes-mcp-timedata).
+
   - solve_equation : Risolve equazioni algebriche (lineari, quadratiche, sistemi)
   - differentiate  : Derivate prime, seconde e parziali
   - integrate      : Integrali definiti e non definiti
@@ -636,40 +639,6 @@ if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
     )
 else:
     mcp_server = FastMCP(name="hermes-web-mcp")
-
-
-# ─── Italian timezone helper ──────────────────────────────
-try:
-    import zoneinfo
-    _TIMEZONE = zoneinfo.ZoneInfo("Europe/Rome")
-except Exception:
-    from datetime import timezone as _tz, timedelta as _td
-    class _CET(_tz):
-        def utcoffset(self, dt): return _td(hours=1)
-        def dst(self, dt): return _td(hours=0)
-        def tzname(self, dt): return "CET"
-    _TIMEZONE = _CET("CET")
-
-_DAYS_IT = ["Lunedì","Martedì","Mercoledì","Giovedì","Venerdì","Sabato","Domenica"]
-_MONTHS_IT = [
-    "gennaio","febbraio","marzo","aprile","maggio","giugno",
-    "luglio","agosto","settembre","ottobre","novembre","dicembre",
-]
-
-
-@mcp_server.tool()
-async def get_current_datetime() -> str:
-    """Ottieni la data e ora attuale in formato italiano (Europe/Rome)."""
-    now = datetime.now(_TIMEZONE)
-    return json.dumps({
-        "date": f"{_DAYS_IT[now.weekday()]}, {now.day} {_MONTHS_IT[now.month - 1]} {now.year}",
-        "time": now.strftime("%H:%M:%S"),
-        "full_datetime": f"{_DAYS_IT[now.weekday()]} {now.day} {_MONTHS_IT[now.month - 1]} {now.year} alle {now.strftime('%H:%M:%S')}",
-        "timezone": "Europe/Rome",
-        "iso": now.isoformat(),
-        "timestamp": int(now.timestamp()),
-        "week_number": now.isocalendar()[1],
-    }, ensure_ascii=False)
 
 
 @mcp_server.tool()
