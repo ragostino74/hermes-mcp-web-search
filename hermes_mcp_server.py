@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.4.1 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v1.5.0 — Web Search & LLM Synthesis Bridge
 
 MCP (Model Context Protocol) server che espone 4 strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -764,6 +764,7 @@ async def read_webpage(url: str) -> str:
 
 # ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
 _BRIDGE_PORT = int(os.environ.get("HERMES_MCP_BRIDGE_PORT", "18761"))
+_BRIDGE_TOKEN = os.environ.get("HERMES_MCP_BRIDGE_TOKEN", "")  # Optional Bearer auth for bridge API
 
 try:
     from fastapi import FastAPI, Query
@@ -793,7 +794,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="1.4.1",
+        version="1.5.0",
         lifespan=_bridge_lifespan,
     )
 
@@ -801,7 +802,7 @@ if HAS_FASTAPI:
         CORSMiddleware,
         allow_origins=cors_origins_list,  # HIGH #3: Configurable via HERMES_MCP_CORS_ORIGINS
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
+        allow_headers=["Content-Type", "Authorization"],
         allow_credentials=True,  # Required for cookies/auth when origins are restricted
     )
 
@@ -827,20 +828,28 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "1.4.1"}
+        return {"status": "ok", "version": "1.5.0"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
-    async def api_search(query: str = Query(..., description="Search query"), max_results: int = 5):
+    async def api_search(request, query: str = Query(..., description="Search query"), max_results: int = 5):
         """Web search API endpoint (rate-limited via token bucket + semaphore)."""
+        if _BRIDGE_TOKEN:
+            auth = request.headers.get("Authorization")
+            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
+                return {"error": "unauthorized"}, 401
         safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
         result = await _external_call(_search_web, safe_query, min(max(1, max_results), 10))
         return result
 
     @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
     @rate_limited
-    async def api_deep_search(query: str = Query(..., description="Search query")):
+    async def api_deep_search(request, query: str = Query(..., description="Search query")):
         """Deep search API endpoint — runs web search first, then LLM analysis. Rate-limited."""
+        if _BRIDGE_TOKEN:
+            auth = request.headers.get("Authorization")
+            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
+                return {"error": "unauthorized"}, 401
         safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
         # First: run actual web search to gather results (not just LLM hallucination)
         search_result = await _external_call(_search_web, safe_query)
@@ -886,7 +895,7 @@ async def main():
     # ── Start bridge server (if FastAPI available) ────────────────────────
     _bridge_task = await _start_http_bridge()
 
-    print(f"🔮 Hermes MCP Server v1.4.1", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.5.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
     print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
@@ -959,7 +968,7 @@ async def main():
                 app=mcp_app,
                 allow_origins=cors_origins_list,  # HIGH #3: Same list as bridge (configurable)
                 allow_methods=["POST", "OPTIONS"],
-                allow_headers=["*"],
+                allow_headers=["Content-Type", "Authorization"],
                 expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
             )
 
