@@ -5,6 +5,19 @@ Tutti i cambiamenti degni di nota in questo progetto saranno documentati in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-05-17
+### Added
+- **Scientific Computing Suite**: 8 nuovi strumenti di calcolo scientifico:
+  - `solve_equation` — Risoluzione equazioni algebriche (lineari, quadratiche, sistemi) con SymPy
+  - `differentiate` — Calcolo derivate prime, seconde e parziali con SymPy
+  - `integrate` — Integrali definiti e non definiti con SymPy
+  - `limit_func` — Calcolo limiti di funzioni con SymPy
+  - `simplify_expr` — Semplificazione espressioni simboliche con SymPy
+  - `numerical_calculate` — Calcoli numerici complessi (aritmetica, trigonometria, logaritmi, regressione lineare, probabilità normale/Poisson) con NumPy/SciPy
+  - `matrix_operations` — Operazioni matriciali complete (det, autovalori, inversa, SVD, trasposta, rango, traccia, norme) con NumPy/SciPy
+  - `statistics` — Statistica descrittiva completa, correlazione, test di normalità (Shapiro-Wilk), regressione lineare, rilevamento anomalie (z-score) con NumPy/SciPy
+- **Dipendenze scientifiche**: Aggiunti sympy, numpy, scipy a requirements.txt
+
 ## [1.4.0] - 2026-05-16 (Stabile)
 ### Fixed
 - **DNS Rebinding Protection**: Ripristinata la protezione nativa del framework MCP (`enable_dns_rebinding_protection=True`).
@@ -84,7 +97,7 @@ e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.
 ### Added
 - Release iniziale di Hermes MCP Web Search Tool (integrazione DuckDuckGo).
 
-[Unreleased]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.5.0...HEAD
 [1.4.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ragostino74/hermes-mcp-server/compare/v1.1.1...v1.2.0
