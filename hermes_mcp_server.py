@@ -564,23 +564,6 @@ def _search_web(query, max_results=5):
     return ddg_result
 
 
-def _deep_search_via_hermes(query):
-    """Send to Hermes bridge for deep search with reasoning."""
-    if not HTTPX_AVAILABLE or not HERMES_BRIDGE_URL:
-        return None
-    try:
-        # MEDIUM #4: Granular timeout instead of flat 180s (was causing thread-pool saturation)
-        with httpx.Client(timeout=httpx.Timeout(connect=30, read=60, write=30, pool=5)) as client:
-            resp = client.post(
-                f"{HERMES_BRIDGE_URL}/api/search",
-                json={"query": query},
-                headers={"Content-Type": "application/json"},
-            )
-            return resp.json() if resp.status_code == 200 else None
-    except Exception:
-        return None
-
-
 # -- FastMCP server instance (con CORS disabled per consentire accessi dalla WebUI) --
 try:
     from mcp.server.transport_security import TransportSecuritySettings
@@ -725,25 +708,8 @@ async def read_webpage(url: str) -> str:
 
 
 
-# ── HTTP Bridge Server (standalone, per Hermes Agent integration) ────────
-_BRIDGE_PORT = int(os.environ.get("HERMES_MCP_BRIDGE_PORT", "18761"))
-_BRIDGE_TOKEN = os.environ.get("HERMES_MCP_BRIDGE_TOKEN", "")  # Optional Bearer auth for bridge API
-
-try:
-    from fastapi import FastAPI, Query
-    from fastapi.middleware.cors import CORSMiddleware
-    from contextlib import asynccontextmanager
-    HAS_FASTAPI = True
-except ImportError:
-    HAS_FASTAPI = False
-
-
-@asynccontextmanager
-async def _bridge_lifespan(_app):
-    yield  # startup / shutdown hooks here if needed
-
-
-# HIGH #3: CORS origins — configurable via HERMES_MCP_CORS_ORIGINS env var (comma-separated).
+# ── CORS origins for MCP HTTP server ────────
+# Configurable via HERMES_MCP_CORS_ORIGINS env var (comma-separated).
 # Default: localhost:* only. Setting to "[]" disables all CORS (same-origin only).
 _CORS_RAW = os.environ.get("HERMES_MCP_CORS_ORIGINS", "").strip()
 if _CORS_RAW.lower() == "[]":
@@ -754,116 +720,13 @@ else:
     cors_origins_list = ["http://localhost:*", "https://localhost:*"]  # Default: localhost only
 
 
-if HAS_FASTAPI:
-    bridge_app = FastAPI(
-        title="Hermes Web Search Bridge",
-        version="1.5.3",
-        lifespan=_bridge_lifespan,
-    )
-
-    bridge_app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins_list,  # HIGH #3: Configurable via HERMES_MCP_CORS_ORIGINS
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-        allow_credentials=True,  # Required for cookies/auth when origins are restricted
-    )
-
-    # ── Request audit logging (middleware: fires after CORS) ──────
-    @bridge_app.middleware("http")
-    async def audit_middleware(request, call_next):
-        start = time.monotonic()
-        method = request.method
-        path = request.url.path
-        query_str = request.url.query if request.url.query else "-"
-
-        response = await call_next(request)
-
-        elapsed_ms = (time.monotonic() - start) * 1000
-        client_ip = request.client.host if request.client else "-"
-        _audit_logger.info(
-            "%s %s?%s → %d (%.0fms) client=%s",
-            method, path, query_str[:200], response.status_code, elapsed_ms, client_ip
-        )
-        return response
-
-    @rate_limited
-    @bridge_app.get("/health")
-    async def health():
-        """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "1.5.3"}
-        return {"status": "ok", "version": "1.5.3"}
-
-    @bridge_app.api_route("/api/search", methods=["GET", "POST"])
-    @rate_limited
-    async def api_search(request, query: str = Query(..., description="Search query"), max_results: int = 5):
-        """Web search API endpoint (rate-limited via token bucket + semaphore)."""
-        if _BRIDGE_TOKEN:
-            auth = request.headers.get("Authorization")
-            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
-                return {"error": "unauthorized"}, 401
-        safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
-        result = await _external_call(_search_web, safe_query, min(max(1, max_results), 10))
-        return result
-
-    @bridge_app.api_route("/api/deep-search", methods=["GET", "POST"])
-    @rate_limited
-    async def api_deep_search(request, query: str = Query(..., description="Search query")):
-        """Deep search API endpoint — runs web search first, then LLM analysis. Rate-limited."""
-        if _BRIDGE_TOKEN:
-            auth = request.headers.get("Authorization")
-            if not auth or not auth.startswith("Bearer ") or auth[7:] != _BRIDGE_TOKEN:
-                return {"error": "unauthorized"}, 401
-        safe_query = _sanitize_for_llm(query.strip(), max_len=200) if isinstance(query, str) else str(query)
-        # First: run actual web search to gather results (not just LLM hallucination)
-        search_result = await _external_call(_search_web, safe_query)
-        raw_content = "\n---\n".join([
-            f"# {_sanitize_search_result(r['title'], 200)}\n{_sanitize_search_result(r.get('snippet', ''), 500)}"
-            for r in search_result.get("results", [])
-        ])
-        # Then: LLM analysis of actual search results
-        llm_prompt = (
-            f'Sei un assistente AI. Analizza questi risultati per: {safe_query}\n\n'
-            f"Risultati:\n{raw_content[:8000]}\n\n"
-            "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
-        )
-        llm_answer = await _external_call(_summarize_with_llm, llm_prompt)
-        return {
-            "query": safe_query,
-            "search_results_count": len(search_result.get("results", [])),
-            "llm_analysis": llm_answer or "LLM summarization not available",
-            "source_results": search_result.get("results", []),
-        }
-
-
 # ── Startup helpers ──────────────────────────────────────────────────────
-
-async def _start_http_bridge():
-    """Launch the FastAPI bridge server on HERMES_MCP_BRIDGE_PORT."""
-    if not HAS_FASTAPI:
-        sys.stderr.write("Bridge: skipping (fastapi not installed)\n")
-        return
-    try:
-        import uvicorn
-        config = uvicorn.Config(bridge_app, host=_BRIDGE_BIND_ADDR, port=_BRIDGE_PORT, log_level="warning")
-        server = uvicorn.Server(config)
-        t = asyncio.create_task(server.serve())
-        sys.stderr.write(f"Bridge: listening on {_BRIDGE_BIND_ADDR}:{_BRIDGE_PORT}\n")
-        return t
-    except Exception:
-        sys.stderr.write("Bridge: failed to start [hidden]\n")
-        return None
 
 
 async def main():
-    # ── Start bridge server (if FastAPI available) ────────────────────────
-    _bridge_task = await _start_http_bridge()
-
-    print(f"🔮 Hermes MCP Server v1.5.0", file=sys.stderr)
-    print(f"🔮 Hermes MCP Server v1.5.2", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v1.5.3", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
-    print(f"   Bridge: {HERMES_BRIDGE_URL}", file=sys.stderr)
 
     # SearXNG status check
     if SEARXNG_URL and HTTPX_AVAILABLE:
@@ -883,22 +746,7 @@ async def main():
     elif DDG_AVAILABLE:
         print(f"   Search engine: DuckDuckGo (no SEARXNG_URL configured)", file=sys.stderr)
 
-    if HERMES_BRIDGE_URL and HTTPX_AVAILABLE:
-        if not _is_safe_url(HERMES_BRIDGE_URL):
-            print(f"   Bridge: blocked unsafe URL", file=sys.stderr)
-        else:
-            try:
-                with httpx.Client(timeout=3) as c:
-                    # follow_redirects=False prevents SSRF via redirect
-                    r = c.get(f"{HERMES_BRIDGE_URL}/health", follow_redirects=False)
-                    print(
-                        f"   Bridge status: {r.json().get('status', 'unknown')}",
-                        file=sys.stderr,
-                    )
-            except Exception as e:
-                print(f"   Bridge: unavailable ({e})", file=sys.stderr)
-
-   # Non-blocking LLM startup probe (runs in threadpool to avoid blocking event loop)
+    # Non-blocking LLM startup probe (runs in threadpool to avoid blocking event loop)
     loop = asyncio.get_running_loop()
     try:
         llm_summary = await loop.run_in_executor(None, _summarize_with_llm, "Rispondi solo 'OK'", 5)
@@ -933,7 +781,7 @@ async def main():
             # Wrap in CORSMiddleware so browser requests work
             cors_app = CORSMiddleware(
                 app=mcp_app,
-                allow_origins=cors_origins_list,  # HIGH #3: Same list as bridge (configurable)
+                allow_origins=cors_origins_list,  # CORS origins configurable via HERMES_MCP_CORS_ORIGINS
                 allow_methods=["POST", "OPTIONS"],
                 allow_headers=["Content-Type", "Authorization"],
                 expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
@@ -943,9 +791,8 @@ async def main():
             config = uvicorn.Config(cors_app, host=_MCP_BIND_ADDR, port=port, log_level="info")
             server = uvicorn.Server(config)
 
-            # Shared shutdown signal — replaces sys.exit(0) in signal handlers
+            # Shutdown signal handler
             _shutdown_event = asyncio.Event()
-            _mcpx_flag = False  # True if MCP server crashed (not graceful shutdown)
 
             def _on_signal(_sig, _frame):
                 print("\nShutting down...", file=sys.stderr)
@@ -958,34 +805,10 @@ async def main():
                 await server.serve()
             except SystemExit as e:
                 print(f"\nMCP HTTP server exited (code {e.code})", file=sys.stderr)
-                if e.code != 0:
-                    _mcpx_flag = True
-                    if _bridge_task is not None:
-                        print("   Bridge keeps running on port " + str(_BRIDGE_PORT), file=sys.stderr)
 
-            # If MCP crashed, keep event loop alive so the bridge stays up
-            # until SIGINT/SIGTERM arrives
-            if _mcpx_flag and _bridge_task is not None:
-                await _shutdown_event.wait()  # blocks until signal handler fires
-
-            # Graceful shutdown (signal or MCP exited normally)
-            if _shutdown_event.is_set():
-                print("Shutting down...", file=sys.stderr)
-                if _bridge_task is not None:
-                    _bridge_task.cancel()
-                    try:
-                        await _bridge_task
-                    except asyncio.CancelledError:
-                        pass
-
-            # If MCP crashed but no signal received, stay alive for bridge
-            elif _mcpx_flag and _bridge_task is not None:
-                print("   Keeping event loop alive for bridge...", file=sys.stderr)
-                try:
-                    while True:
-                        await asyncio.sleep(1)
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    pass  # killed by external force — bridge was already cancelled above? No.
+            # Wait for shutdown signal
+            await _shutdown_event.wait()
+            print("Shutting down...", file=sys.stderr)
 
         else:
             print(

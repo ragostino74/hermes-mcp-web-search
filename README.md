@@ -14,7 +14,7 @@ Permette a qualsiasi client MCP (llama.cpp WebUI, Claude Desktop, o altri) di ce
 - Python 3.11+
 - [`mcp[serve]`](https://pypi.org/project/mcp/) >= 1.26
 - [`duckduckgo-search`](https://pypi.org/project/duckduckgo-search/)
-- [`httpx`](https://pypi.org/project/httpx/) (opzionale, per bridge e fetch web)
+- [`httpx`](https://pypi.org/project/httpx/) (opzionale, per fetch web)
 
 ## Installazione
 
@@ -51,12 +51,10 @@ python hermes_mcp_server.py
 | `SEARXNG_URL` | *(disabilitato)* | URL dell'istanza SearXNG. Se impostata, motore principale con fallback su DuckDuckGo. Es: `http://10.0.0.154:8888` |
 | `HERMES_MCP_TRANSPORT` | `stdio` | Modalità di trasporto: `stdio`, `http`, o `dual` |
 | `HERMES_MCP_PORT` | `18760` | Porta per la modalità HTTP/StreamableHTTP |
-| `HERMES_MCP_BRIDGE_PORT` | `18761` | Porta per la Bridge REST API (integrazioni esterne) |
 | `HERMES_MCP_RATE_LIMIT` | `5` | Max chiamate/minute per token bucket (rate limiting) |
 | `HERMES_MCP_CONCURRENCY` | `3` | Max chiamate HTTP parallele (semaphore cap) |
 | `HERMES_MCP_CORS_ORIGINS` | `http://localhost:*,https://localhost:*` | CORS origins, comma-separated. Imposta a `[]` per same-origin-only |
 | `HERMES_MCP_BIND_ADDR` | `127.0.0.1` | Bind IP per il server MCP HTTP |
-| `HERMES_BRIDGE_BIND_ADDR` | `127.0.0.1` | Bind IP per la bridge API REST |
 
 ## Integrazione con llama.cpp WebUI
 
@@ -73,21 +71,6 @@ Lo script supporta anche la modalità **stdio** per:
 - **Claude Desktop** — aggiungi al config JSON
 - **VS Code** — estensioni MCP
 - Qualsiasi altro client che supporti il protocollo MCP via stdio
-
-## Bridge REST API
-
-Il bridge espone un'API REST su `http://localhost:<HERMES_MCP_BRIDGE_PORT>` per integrazioni esterne:
-
-| Endpoint | Metodo | Descrizione |
-|----------|--------|-------------|
-| `/health` | GET | Health check — restituisce `{"status": "ok", "version": "1.5.2"}` (rate-limited) |
-| `/api/search` | GET/POST | Web search con parametri `query` e `max_results` |
-| `/api/deep-search` | GET/POST | Deep research: query + web search + analisi LLM strutturata |
-
-Esempio di richiesta:
-```bash
-curl "http://localhost:18761/api/search?query=ultime+notizie+AI"
-```
 
 ## Sicurezza
 
