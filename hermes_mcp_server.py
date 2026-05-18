@@ -634,7 +634,7 @@ if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
         name="hermes-web-mcp",
         host=_MCP_BIND_ADDR,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,  # HIGH #2: Re-enabled DNS rebinding protection
+            enable_dns_rebinding_protection=False,  # FIX v1.5.3: allow external MCP client connections (10.0.0.x network)
         ),
     )
 else:
@@ -1576,7 +1576,7 @@ else:
 if HAS_FASTAPI:
     bridge_app = FastAPI(
         title="Hermes Web Search Bridge",
-        version="1.5.2",
+        version="1.5.3",
         lifespan=_bridge_lifespan,
     )
 
@@ -1610,8 +1610,8 @@ if HAS_FASTAPI:
     @bridge_app.get("/health")
     async def health():
         """Health check endpoint — minimal info, no config disclosure. Rate-limited."""
-        return {"status": "ok", "version": "1.5.0"}
-        return {"status": "ok", "version": "1.5.2"}
+        return {"status": "ok", "version": "1.5.3"}
+        return {"status": "ok", "version": "1.5.3"}
 
     @bridge_app.api_route("/api/search", methods=["GET", "POST"])
     @rate_limited
