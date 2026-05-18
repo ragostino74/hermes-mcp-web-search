@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.5.2 — Web Search & LLM Synthesis Bridge
+Hermes MCP Server v1.5.3 — Web Search & LLM Synthesis
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -14,7 +14,6 @@ Note: lo strumento `get_current_datetime` è stato spostato nel server dedicato
 Caratteristiche:
   - Doppio trasporto: stdio (Claude Desktop, VS Code) + HTTP/StreamableHTTP
   - Rate limiting configurabile (token bucket + semaphore)
-  - Bridge REST API su :18761 per integrazioni esterne
   - SSRF protection completa (IP privati, IPv6, metadata endpoints, DNS rebinding)
   - Prompt injection sanitization (3 fasi: control chars, role markers, structural)
   - Cache LRU con TTL e SHA-256
@@ -36,24 +35,15 @@ Variabili d'ambiente:
   LLM_MODEL           : Nome modello (default: Qwen3.6-35B-A3B-Q8_0.gguf)
   SEARXNG_URL         : Istanzа SearXNG per ricerca avanzata (opzionale)
   HERMES_MCP_PORT     : Porta HTTP MCP (default: 18760)
-  HERMES_MCP_BRIDGE_PORT : Porta bridge API (default: 18761)
   HERMES_MCP_TRANSPORT : stdio | http | dual (default: stdio)
   HERMES_MCP_RATE_LIMIT : Max chiamate/minute per token bucket (default: 5)
   HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
-  HERMES_BRIDGE_BIND_ADDR : Bind bridge API (default: 127.0.0.1)
   HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1)
   HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
 """
-import json, sys, os, re, hashlib, asyncio, signal as sig_mod, time, logging
+import json, sys, os, re, hashlib, asyncio, signal as sig_mod
 from datetime import datetime, timezone
 from urllib.parse import urlparse
-
-# Structured request logger for bridge API (audit trail)
-_audit_logger = logging.getLogger("hermes.bridge.audit")
-_audit_handler = logging.StreamHandler(sys.stderr)
-_audit_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [AUDIT] %(message)s"))
-_audit_logger.addHandler(_audit_handler)
-_audit_logger.setLevel(logging.INFO)
 
 try:
     from mcp.server import Server
@@ -88,12 +78,12 @@ except ImportError:
 TRANSPORT = os.environ.get("HERMES_MCP_TRANSPORT", "stdio")
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
-HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
 
 # ── Server bind addresses (default localhost for security) ────────
 _MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "127.0.0.1")  # MCP HTTP transport
-_BRIDGE_BIND_ADDR = os.environ.get("HERMES_BRIDGE_BIND_ADDR", "127.0.0.1")  # Bridge REST API
+
+
 def _is_safe_url(url: str) -> bool:
     """Block access to localhost, private IPs, link-local, metadata endpoints.
 
