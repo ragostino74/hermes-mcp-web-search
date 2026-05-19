@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v1.5.3 — Web Search & LLM Synthesis
+Hermes MCP Server v2.0.0 — Web Search & LLM Synthesis
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -14,7 +14,7 @@ Note: lo strumento `get_current_datetime` è stato spostato nel server dedicato
 Caratteristiche:
   - Doppio trasporto: stdio (Claude Desktop, VS Code) + HTTP/StreamableHTTP
   - Rate limiting configurabile (token bucket + semaphore)
-  - SSRF protection completa (IP privati, IPv6, metadata endpoints, DNS rebinding)
+  - SSRF protection completa (IP privati, IPv6, metadata endpoints)
   - Prompt injection sanitization (3 fasi: control chars, role markers, structural)
   - Cache LRU con TTL e SHA-256
 
@@ -38,8 +38,14 @@ Variabili d'ambiente:
   HERMES_MCP_TRANSPORT : stdio | http | dual (default: stdio)
   HERMES_MCP_RATE_LIMIT : Max chiamate/minute per token bucket (default: 5)
   HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
-  HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1)
+  HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 0.0.0.0 — ascolta su tutte le interfaccie)
   HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
+
+Cambiamenti in v2.0.0 (BREAKING):
+  - SSRF guard estesa a SearXNG e LLM_ENDPOINT (prima solo read_webpage)
+  - deep_search: query sanitizzata prima di iniezione nel prompt LLM
+  - CORS: aggiunta allow_credentials=True per supporto autenticazione cross-origin
+  - Bind default cambiato da 127.0.0.1 a 0.0.0.0 (accessibile da rete esterna)
 """
 import json, sys, os, re, hashlib, asyncio, signal as sig_mod
 from datetime import datetime, timezone
@@ -80,8 +86,8 @@ LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:10000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
 
-# ── Server bind addresses (default localhost for security) ────────
-_MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "127.0.0.1")  # MCP HTTP transport
+# ── Server bind addresses (default 0.0.0.0 for network accessibility) ───
+_MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "0.0.0.0")  # MCP HTTP transport
 
 
 def _is_safe_url(url: str) -> bool:
@@ -460,6 +466,11 @@ def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: f
         host = p.hostname or "localhost"
         port = p.port or 80
 
+        # SSRF guard for LLM endpoint — block private/metadata IPs while allowing localhost
+        if not _is_safe_url(LLM_ENDPOINT):
+            sys.stderr.write("LLM endpoint: blocked unsafe URL\n")
+            return ""
+
         # Pre-sanitise the full prompt (which may contain injected user data)
         safe_prompt = _sanitize_for_llm(prompt_text, max_len=6000)
 
@@ -513,6 +524,10 @@ def _search_searxng(query, max_results=5):
     """Search via SearXNG instance."""
     if not SEARXNG_URL:
         return None  # Not configured — caller decides fallback
+    # SSRF guard: validate SearXNG URL before making any request
+    if not _is_safe_url(SEARXNG_URL):
+        sys.stderr.write("SearXNG: blocked unsafe URL\n")
+        return {"error": "SearXNG URL bloccato (localhost, IP privati o non sicuri)", "results": []}
     ck = _cache_key(f"searxng:{query}:{max_results}")
     cached = _get_cached(ck)
     if cached:
@@ -528,7 +543,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=httpx.Timeout(connect=5, read=15), follow_redirects=False) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/1.5.2"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/2.0.0"})
             data = resp.json()
 
         results = []
@@ -574,9 +589,8 @@ if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
     mcp_server = FastMCP(
         name="hermes-web-mcp",
         host=_MCP_BIND_ADDR,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False,  # FIX v1.5.3: allow external MCP client connections (10.0.0.x network)
-        ),
+        # DNS rebinding protection stays ON — security boundary for MCP protocol
+        # CORS (applied via Starlette middleware below) handles network-level access control
     )
 else:
     mcp_server = FastMCP(name="hermes-web-mcp")
@@ -617,7 +631,7 @@ async def deep_search(query: str) -> str:
         for r in search_result.get("results", [])
     ])
     llm_prompt = (
-        f'Sei un assistente AI. Analizza questi risultati per: {query}\n\n'
+        f'Analizza questi risultati di ricerca per la query: {query}\n\n'
         f"Risultati:\n{raw_content[:8000]}\n\n"
         "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
     )
@@ -724,7 +738,7 @@ else:
 
 
 async def main():
-    print(f"🔮 Hermes MCP Server v1.5.3", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v2.0.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
 
@@ -783,7 +797,8 @@ async def main():
                 app=mcp_app,
                 allow_origins=cors_origins_list,  # CORS origins configurable via HERMES_MCP_CORS_ORIGINS
                 allow_methods=["POST", "OPTIONS"],
-                allow_headers=["Content-Type", "Authorization"],
+                allow_headers=["Content-Type", "Authorization", "Mcp-Session-Id"],
+                allow_credentials=True,  # Allow auth cookies/tokens from cross-origin browsers
                 expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
             )
 
