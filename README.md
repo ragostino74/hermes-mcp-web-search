@@ -63,7 +63,7 @@ python hermes_mcp_server.py
 3. Aggiungi un nuovo server con:
    - **URL**: `http://localhost:18760/mcp` (o l'IP della tua macchina)
    - **Transport**: `streamable_http`
-4. Il server dovrebbe connettersi e mostrare i 4 tools disponibili
+4. Il server dovrebbe connettersi e mostrare i 3 tools disponibili
 
 ## Integrazione con altri client MCP
 
