@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v2.0.0 — Web Search & LLM Synthesis
+Hermes MCP Server v2.1.0 — Web Search & LLM Synthesis
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -16,7 +16,7 @@ Caratteristiche:
   - Rate limiting configurabile (token bucket + semaphore)
   - SSRF protection completa (IP privati, IPv6, metadata endpoints)
   - Prompt injection sanitization (3 fasi: control chars, role markers, structural)
-  - Cache LRU con TTL e SHA-256
+  - Cache FIFO con TTL e SHA-256
 
 Modi di esecuzione:
   # STDIO (default — per Claude Desktop, VS Code, Hermes Agent)
@@ -33,19 +33,20 @@ Modi di esecuzione:
 Variabili d'ambiente:
   LLM_ENDPOINT        : Endpoint LLM OpenAI-compatible (default: localhost:10000/v1)
   LLM_MODEL           : Nome modello (default: Qwen3.6-35B-A3B-Q8_0.gguf)
-  SEARXNG_URL         : Istanzа SearXNG per ricerca avanzata (opzionale)
+  SEARXNG_URL         : Istanza SearXNG per ricerca avanzata (opzionale)
   HERMES_MCP_PORT     : Porta HTTP MCP (default: 18760)
   HERMES_MCP_TRANSPORT : stdio | http | dual (default: stdio)
   HERMES_MCP_RATE_LIMIT : Max chiamate/minute per token bucket (default: 5)
   HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
-  HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 0.0.0.0 — ascolta su tutte le interfaccie)
+  HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1 — solo localhost)
   HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
 
-Cambiamenti in v2.0.0 (BREAKING):
-  - SSRF guard estesa a SearXNG e LLM_ENDPOINT (prima solo read_webpage)
-  - deep_search: query sanitizzata prima di iniezione nel prompt LLM
-  - CORS: aggiunta allow_credentials=True per supporto autenticazione cross-origin
-  - Bind default cambiato da 127.0.0.1 a 0.0.0.0 (accessibile da rete esterna)
+Cambiamenti in v2.1.0:
+  - Bind default cambiato da 0.0.0.0 a 127.0.0.1 (sicurezza: non esposto alla rete)
+  - deep_search: query sanitizzata prima di ogni iniezione nel prompt LLM
+  - Requisiti rimossi: sympy, numpy, scipy (non usati)
+  - Errori RESTful invece di [hidden] per debugging
+  - Rimossa importazione morta TransportSecuritySettings
 """
 import json, sys, os, re, hashlib, asyncio, signal as sig_mod
 from datetime import datetime, timezone
@@ -87,7 +88,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-35B-A3B-Q8_0.gguf")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "").rstrip("/")
 
 # ── Server bind addresses (default 0.0.0.0 for network accessibility) ───
-_MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "0.0.0.0")  # MCP HTTP transport
+_MCP_BIND_ADDR = os.environ.get("HERMES_MCP_BIND_ADDR", "127.0.0.1")  # MCP HTTP transport — localhost by default for safety; set 0.0.0.0 only on trusted networks
 
 
 def _is_safe_url(url: str) -> bool:
@@ -205,8 +206,8 @@ def _cache_key(text: str) -> str:
     return hashlib.sha256((_CACHE_SALT + text).encode("utf-8", errors="replace")).hexdigest()
 
 
-def _evict_lru():
-    """Remove oldest entry when cache is full (FIFO eviction for simplicity)."""
+def _evict_fifo():
+    """Remove oldest entry when cache is full (FIFO eviction)."""
     if len(_cache) >= _CACHE_MAX_SIZE:
         oldest_key = next(iter(_cache))
         del _cache[oldest_key]
@@ -222,7 +223,7 @@ def _get_cached(key):
 def _set_cache(key, data):
     """Cache with TTL and LRU eviction (max 100 entries)."""
     # Evict oldest if at capacity
-    _evict_lru()
+    _evict_fifo()
     _cache[key] = {"data": data, "time": datetime.now(timezone.utc)}
 
 
@@ -489,7 +490,8 @@ def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: f
         if data.get("choices"):
             return data["choices"][0]["message"]["content"].strip()
     except Exception:
-        sys.stderr.write("LLM summarize error: [hidden]\n")
+        sys.stderr.write("LLM summarize error\n")
+        return "Errore durante la sintesi LLM"
     return ""
 
 
@@ -516,8 +518,8 @@ def _search_ddg(query, max_results=5):
         _set_cache(ck, result)
         return result
     except Exception:
-        sys.stderr.write("DDG search error: [hidden]\n")
-        return {"error": "Ricerca fallita (errore interno)", "results": []}
+        sys.stderr.write("DDG search error\n")
+        return {"error": "Errore durante la ricerca DuckDuckGo", "results": []}
 
 
 def _search_searxng(query, max_results=5):
@@ -563,8 +565,8 @@ def _search_searxng(query, max_results=5):
         _set_cache(ck, result)
         return result
     except Exception:
-        sys.stderr.write("SearXNG error: [hidden]\n")
-        return None
+        sys.stderr.write("SearXNG error\n")
+        return {"error": "Errore durante la ricerca SearXNG", "results": []}
 
 
 def _search_web(query, max_results=5):
@@ -579,18 +581,11 @@ def _search_web(query, max_results=5):
     return ddg_result
 
 
-# -- FastMCP server instance (con CORS disabled per consentire accessi dalla WebUI) --
-try:
-    from mcp.server.transport_security import TransportSecuritySettings
-except ImportError:
-    TransportSecuritySettings = None
-
-if FASTMCP_AVAILABLE and TransportSecuritySettings is not None:
+# -- FastMCP server instance (CORS handled via Starlette middleware below) --
+if FASTMCP_AVAILABLE:
     mcp_server = FastMCP(
         name="hermes-web-mcp",
         host=_MCP_BIND_ADDR,
-        # DNS rebinding protection stays ON — security boundary for MCP protocol
-        # CORS (applied via Starlette middleware below) handles network-level access control
     )
 else:
     mcp_server = FastMCP(name="hermes-web-mcp")
@@ -608,8 +603,11 @@ async def web_search(query: str, max_results: int = 5) -> str:
             f"{_sanitize_search_result(r['title'], 150)}: {_sanitize_search_result(r['snippet'], 200)}"
             for r in result["results"]
         ])
+        # Re-sanitize query before embedding in prompt — line-start regexes need the text
+        # to be at a line start; inside an f-string they would not match.
+        safe_query = _sanitize_for_llm(query, max_len=200)
         summary_prompt = (
-            f"Sintetizza in italiano questi risultati di ricerca per: {query}\n\n"
+            f"Sintetizza in italiano questi risultati di ricerca per: {safe_query}\n\n"
             f"{raw}\n\nRispondi con 3-5 punti chiave."
         )
         llm_result = await _external_call(_summarize_with_llm, summary_prompt)
@@ -630,8 +628,12 @@ async def deep_search(query: str) -> str:
         f"# {_sanitize_search_result(r['title'], 200)}\n{_sanitize_search_result(r['snippet'], 500)}"
         for r in search_result.get("results", [])
     ])
+    # Sanitize query again right before injection — _sanitize_for_llm line-start
+    # regexes only trigger when the text is at the beginning of a line, so embedding
+    # it inside an f-string would bypass that protection.
+    safe_query = _sanitize_for_llm(query, max_len=200)
     llm_prompt = (
-        f'Analizza questi risultati di ricerca per la query: {query}\n\n'
+        f'Analizza questi risultati di ricerca per la query: {safe_query}\n\n'
         f"Risultati:\n{raw_content[:8000]}\n\n"
         "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
     )

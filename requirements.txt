@@ -2,6 +2,3 @@ mcp[serve]>=1.26
 duckduckgo-search>=5.0
 httpx>=0.27
 aiolimiter>=1.1
-sympy>=1.13
-numpy>=1.24
-scipy>=1.11
