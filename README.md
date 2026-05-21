@@ -56,14 +56,17 @@ python hermes_mcp_server.py
 | `HERMES_MCP_CORS_ORIGINS` | `http://localhost:*,https://localhost:*` | CORS origins, comma-separated. Imposta a `[]` per same-origin-only |
 || `HERMES_MCP_BIND_ADDR` | `127.0.0.1` | Bind IP per il server MCP HTTP (default localhost; impostare `0.0.0.0` solo su reti affidabili) |
 
-## Note sulla Sicurezza (v2.0.0)
+## Note sulla Sicurezza (v2.x)
 
-La versione 2.0.0 introduce modifiche breaking alla sicurezza:
+La versione 2.x introduce protezioni di sicurezza multiple:
 
-1. **SSRF guard estesa**: ora protegge anche `SEARXNG_URL` e `LLM_ENDPOINT` (prima solo `read_webpage`)
-2. **DNS rebinding protection**: attivata di default nel framework MCP (rimossa la workaround v1.5.3)
-3. **Bind su 0.0.0.0**: il server HTTP ascolta su tutte le interfacce; usa `HERMES_MCP_BIND_ADDR=127.0.0.1` per limitare a localhost
-4. **CORS con credentials**: abilitato per supporto autenticazione cross-origin (richiede origins esplicite, no wildcard)
+1. **SSRF guard estesa**: blocca localhost, IP privati IPv4/IPv6, metadata cloud, IDN homograph e punycode in `read_webpage`, `SEARXNG_URL` e `LLM_ENDPOINT`
+2. **DNS rebinding protection**: attivata di default nel framework MCP (`mcp[serve] >= 1.26`)
+3. **Bind localhost di default**: il server HTTP ascolta su `127.0.0.1`; usa `HERMES_MCP_BIND_ADDR=0.0.0.0` solo su reti affidabili
+4. **CORS restrittivo**: `allow_credentials=False` per compatibilità browser moderne; origins configurabili via `HERMES_MCP_CORS_ORIGINS`. MCP-Session-ID passato via header (no cookie necessari).
+
+### Compatibilità Browser CORS (v2.1.1)
+I browser moderni bloccano la combinazione `Access-Control-Allow-Credentials: true` + wildcard subdomains (`localhost:*`). In v2.1.1 è stato rimosso `allow_credentials=True` poiché MCP usa solo header per la sessione, non cookie di autenticazione. Per origins esplicite senza wildcard (es. `http://localhost:18760`) il comportamento è identico.
 
 ## Integrazione con llama.cpp WebUI
 
@@ -93,6 +96,11 @@ hermes-mcp-server/
 ```
 
 ## Changelog
+
+### v2.1.1
+- 🐛 Banner version fix: allineato a v2.1.0 (era erroneamente v2.0.0)
+- 🔒 CORS `allow_credentials` disabilitato: compatibile con browser moderne + wildcard subdomains (`localhost:*`)
+- 🏷️ User-Agent aggiornato a `hermes-mcp-server/2.1.1`
 
 ### v2.1.0
 - 🔒 Bind default: `0.0.0.0` → `127.0.0.1` (sicurezza: non esposto alla rete senza configurazione esplicita)

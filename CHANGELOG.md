@@ -5,6 +5,13 @@ Tutti i cambiamenti degni di nota in questo progetto saranno documentati in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-05-21
+
+### Fixed
+- **Banner version**: Allineato a v2.1.0 (era erroneamente v2.0.0 nel banner di avvio)
+- **CORS credentials**: Rimosso `allow_credentials=True` — i browser bloccano la combinazione wildcard subdomains (`localhost:*`) + credentials. MCP usa header per la sessione, non cookie.
+- **User-Agent**: Aggiornato a `hermes-mcp-server/2.1.1`
+
 ## [1.6.0] - 2026-05-17
 
 ### Breaking

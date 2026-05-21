@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v2.1.0 — Web Search & LLM Synthesis
+Hermes MCP Server v2.1.1 — Web Search & LLM Synthesis
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -40,6 +40,11 @@ Variabili d'ambiente:
   HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
   HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1 — solo localhost)
   HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
+
+Cambiamenti in v2.1.1:
+  - Banner version fix: allineato a v2.1.0 (era v2.0.0)
+  - CORS allow_credentials disabilitato: compatibile con browser moderne + wildcard subdomains
+  - User-Agent aggiornato a v2.1.1
 
 Cambiamenti in v2.1.0:
   - Bind default cambiato da 0.0.0.0 a 127.0.0.1 (sicurezza: non esposto alla rete)
@@ -545,7 +550,7 @@ def _search_searxng(query, max_results=5):
         }
         url = f"{SEARXNG_URL}/search?{up.urlencode(params)}"
         with httpx.Client(timeout=httpx.Timeout(connect=5, read=15), follow_redirects=False) as client:
-            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/2.0.0"})
+            resp = client.get(url, headers={"User-Agent": "hermes-mcp-server/2.1.1"})
             data = resp.json()
 
         results = []
@@ -740,7 +745,7 @@ else:
 
 
 async def main():
-    print(f"🔮 Hermes MCP Server v2.0.0", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v2.1.1", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
 
@@ -800,8 +805,9 @@ async def main():
                 allow_origins=cors_origins_list,  # CORS origins configurable via HERMES_MCP_CORS_ORIGINS
                 allow_methods=["POST", "OPTIONS"],
                 allow_headers=["Content-Type", "Authorization", "Mcp-Session-Id"],
-                allow_credentials=True,  # Allow auth cookies/tokens from cross-origin browsers
-                expose_headers=["Mcp-Session-Id", "Cache-Control", "Content-Disposition"],
+                # NOTE: allow_credentials=True is intentionally disabled.
+                # Browsers block wildcard subdomains (*) + credentials combination.
+                # MCP-Session-ID is passed via header, not cookie — no auth cookies needed.
             )
 
             import uvicorn
