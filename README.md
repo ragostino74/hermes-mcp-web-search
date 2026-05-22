@@ -56,7 +56,7 @@ python hermes_mcp_server.py
 | `HERMES_MCP_CORS_ORIGINS` | `http://localhost:*,https://localhost:*` | CORS origins, comma-separated. Imposta a `[]` per same-origin-only |
 || `HERMES_MCP_BIND_ADDR` | `127.0.0.1` | Bind IP per il server MCP HTTP (default localhost; impostare `0.0.0.0` solo su reti affidabili) |
 
-## Note sulla Sicurezza (v2.x)
+## Note sulla Sicurezza
 
 La versione 2.x introduce protezioni di sicurezza multiple:
 
@@ -94,28 +94,6 @@ hermes-mcp-server/
 ├── .gitignore
 └── requirements.txt        # Dipendenze Python
 ```
-
-## Changelog
-
-### v2.1.1
-- 🐛 Banner version fix: allineato a v2.1.0 (era erroneamente v2.0.0)
-- 🔒 CORS `allow_credentials` disabilitato: compatibile con browser moderne + wildcard subdomains (`localhost:*`)
-- 🏷️ User-Agent aggiornato a `hermes-mcp-server/2.1.1`
-
-### v2.1.0
-- 🔒 Bind default: `0.0.0.0` → `127.0.0.1` (sicurezza: non esposto alla rete senza configurazione esplicita)
-- 🛡️ deep_search/web_search: query re-sanitizzata prima di ogni iniezione nel prompt LLM (line-start regex bypass fix)
-- 🧹 Requisiti rimossi: sympy, numpy, scipy (non usati — superficie di attacco ridotta)
-- 🔍 Errori RESTful invece di `[hidden]` per debugging (stderr + messaggio strutturato nella risposta)
-- 🧹 Rimossa importazione morta `TransportSecuritySettings`
-
-### v2.0.0
-- 🔒 SSRF guard estesa a SearXNG e LLM_ENDPOINT
-- 🔒 DNS rebinding protection riattivata di default
-- 🌐 Bind default: 127.0.0.1 → 0.0.0.0 (accessibile da rete esterna)
-- 🔧 CORS: aggiunta `allow_credentials=True`
-- 🛡️ deep_search: query sanitizzata prima di iniezione nel prompt LLM
-- 🧹 Rimosso `TransportSecuritySettings(enable_dns_rebinding_protection=False)`
 
 ## Licenza
 
