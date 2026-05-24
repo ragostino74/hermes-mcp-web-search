@@ -5,6 +5,13 @@ Tutti i cambiamenti degni di nota in questo progetto saranno documentati in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 e questo progetto aderisce a [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **FastMCP >= 1.27 compatibilità**: gli strumenti MCP tornano `dict` (non più `str` con `json.dumps`)
+- **_summarize_with_llm**: uniformato a `httpx` al posto di `http.client.HTTPConnection`, con timeout strutturati e gestione errori HTTP
+- **Timeout LLM**: aggiunta deadline 120s su tutte le chiamate LLM via `asyncio.wait_for`
+
 ## [2.1.1] - 2026-05-21
 
 ### Fixed

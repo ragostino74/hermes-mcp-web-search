@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes MCP Server v2.1.1 — Web Search & LLM Synthesis
+Hermes MCP Server v2.2.0 — Web Search & LLM Synthesis
 
 MCP (Model Context Protocol) server che espone strumenti di ricerca web:
   - web_search    : Ricerca rapida via DuckDuckGo / SearXNG + sintesi LLM
@@ -40,6 +40,12 @@ Variabili d'ambiente:
   HERMES_MCP_CONCURRENCY : Max chiamate parallele (default: 3)
   HERMES_MCP_BIND_ADDR    : Bind MCP HTTP (default: 127.0.0.1 — solo localhost)
   HERMES_MCP_CORS_ORIGINS : CORS origins comma-separated (default: localhost:*)
+
+Cambiamenti in v2.2.0:
+  - Compatibilità FastMCP >= 1.27: tool tornano dict (non json.dumps string)
+  - _summarize_with_llm: uniformato a httpx (era http.client.HTTPConnection)
+  - Timeout globale 120s su tutte le chiamate LLM con asyncio.wait_for
+  - User-Agent aggiornato a v2.2.0
 
 Cambiamenti in v2.1.1:
   - Banner version fix: allineato a v2.1.0 (era v2.0.0)
@@ -466,8 +472,10 @@ def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: f
     This is a SYNC function called via _external_call() which wraps it in
     asyncio.to_thread()/run_in_executor to prevent blocking the event loop.
     """
+    if not HTTPX_AVAILABLE:
+        sys.stderr.write("LLM summarize error: httpx not available\n")
+        return "Errore durante la sintesi LLM (httpx non disponibile)"
     try:
-        import http.client as hc
         p = urlparse(LLM_ENDPOINT)
         host = p.hostname or "localhost"
         port = p.port or 80
@@ -487,13 +495,23 @@ def _summarize_with_llm(prompt_text: str, max_tokens: int = 1500, temperature: f
             "temperature": temperature,
             "stream": False,
         })
-        c = hc.HTTPConnection(host, port, timeout=45)
-        c.request("POST", "/chat/completions", body=body, headers={"Content-Type": "application/json"})
-        r = c.getresponse()
-        data = json.loads(r.read().decode())
-        c.close()
+        with httpx.Client(
+            timeout=httpx.Timeout(connect=5, read=90, write=10, pool=5),
+            follow_redirects=False,
+            headers={"User-Agent": "hermes-mcp-server/2.2.0"},
+        ) as client:
+            resp = client.post(
+                f"{LLM_ENDPOINT}/chat/completions",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
         if data.get("choices"):
             return data["choices"][0]["message"]["content"].strip()
+    except httpx.HTTPStatusError as exc:
+        sys.stderr.write(f"LLM HTTP error: {exc.response.status_code}\n")
+        return "Errore durante la sintesi LLM (servizio non disponibile)"
     except Exception:
         sys.stderr.write("LLM summarize error\n")
         return "Errore durante la sintesi LLM"
@@ -598,15 +616,15 @@ else:
 
 @mcp_server.tool()
 @rate_limited
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5) -> dict:
     """Ricerca informazioni su internet (SearXNG / DuckDuckGo) + sintesi LLM."""
     query = _sanitize_for_llm(query.strip(), max_len=200)
     max_r = min(max(1, int(max_results)), 10)
-    result = await _external_call(_search_web, query, max_r)
-    if "results" in result and result.get("results") and len(result["results"]) > 0:
+    search_result = await _external_call(_search_web, query, max_r)
+    if "results" in search_result and search_result.get("results") and len(search_result["results"]) > 0:
         raw = "\n---\n".join([
             f"{_sanitize_search_result(r['title'], 150)}: {_sanitize_search_result(r['snippet'], 200)}"
-            for r in result["results"]
+            for r in search_result["results"]
         ])
         # Re-sanitize query before embedding in prompt — line-start regexes need the text
         # to be at a line start; inside an f-string they would not match.
@@ -615,20 +633,25 @@ async def web_search(query: str, max_results: int = 5) -> str:
             f"Sintetizza in italiano questi risultati di ricerca per: {safe_query}\n\n"
             f"{raw}\n\nRispondi con 3-5 punti chiave."
         )
-        llm_result = await _external_call(_summarize_with_llm, summary_prompt)
-        if llm_result:
-            result["llm_summary"] = llm_result
-    return json.dumps(result, ensure_ascii=False, indent=2)
+        try:
+            llm_result = await asyncio.wait_for(
+                _external_call(_summarize_with_llm, summary_prompt), timeout=120)
+        except asyncio.TimeoutError:
+            sys.stderr.write("LLM call timed out (120s)\n")
+            llm_result = None
+    else:
+        search_result = {}
+    return search_result
 
 
 @mcp_server.tool()
 @rate_limited
-async def deep_search(query: str) -> str:
+async def deep_search(query: str) -> dict:
     """Ricerca profonda con analisi del tuo LLM locale."""
     query = _sanitize_for_llm(query.strip(), max_len=200)
     search_result = await _external_call(_search_web, query)
     if search_result.get("error"):
-        return json.dumps(search_result, indent=2)
+        return search_result
     raw_content = "\n---\n".join([
         f"# {_sanitize_search_result(r['title'], 200)}\n{_sanitize_search_result(r['snippet'], 500)}"
         for r in search_result.get("results", [])
@@ -642,24 +665,28 @@ async def deep_search(query: str) -> str:
         f"Risultati:\n{raw_content[:8000]}\n\n"
         "Fornisci una risposta completa in italiano con punti chiave, fonti e incertezze."
     )
-    llm_answer = await _external_call(_summarize_with_llm, llm_prompt)
-    output = {
+    try:
+        llm_answer = await asyncio.wait_for(
+            _external_call(_summarize_with_llm, llm_prompt), timeout=120)
+    except asyncio.TimeoutError:
+        sys.stderr.write("LLM call timed out (120s)\n")
+        llm_answer = None
+    return {
         "status": "success",
         "query": query,
         "llm_analysis": llm_answer or "LLM summarization not available",
         "source_results": search_result.get("results", []),
     }
-    return json.dumps(output, ensure_ascii=False, indent=2)
 
 
 @mcp_server.tool()
 @rate_limited
-async def read_webpage(url: str) -> str:
+async def read_webpage(url: str) -> dict:
     """Leggi il contenuto di una pagina web con riassunto LLM."""
     if not url.startswith(("http://", "https://")):
-        return json.dumps({"error": "URL invalido"}, indent=2)
+        return {"error": "URL invalido"}
     if not _is_safe_url(url):
-        return json.dumps({"error": "Accesso bloccato: localhost, IP privati e link-local non sono permessi"}, indent=2)
+        return {"error": "Accesso bloccato: localhost, IP privati e link-local non sono permessi"}
     try:
         # FIX CRITICAL #1 (SSRF via redirect): Disable automatic redirects.
         # If a user-controlled URL redirects to a private/metadata IP (e.g. 169.254.169.254),
@@ -677,19 +704,19 @@ async def read_webpage(url: str) -> str:
             if 300 <= resp.status_code < 400:
                 redirect_location = resp.headers.get("location")
                 if not redirect_location:
-                    return json.dumps({"error": "Redirect senza location header", "url": url}, indent=2)
+                    return {"error": "Redirect senza location header", "url": url}
                 # Resolve relative URLs to absolute
                 from urllib.parse import urljoin as _urljoin
                 if not redirect_location.startswith(("http://", "https://")):
                     redirect_location = _urljoin(final_url, redirect_location)
                 # Verify the redirect target is safe
                 if not _is_safe_url(redirect_location):
-                    return json.dumps({
+                    return {
                         "error": f"Accesso bloccato: redirect verso URL non sicuro ({redirect_location})",
                         "url": url,
                         "redirect_from": final_url,
                         "redirect_to": redirect_location,
-                    }, indent=2)
+                    }
                 final_url = redirect_location
             else:
                 # Not a redirect — proceed with response
@@ -705,24 +732,25 @@ async def read_webpage(url: str) -> str:
             # Sanitize extracted content before LLM injection — strip structural attacks
             safe_text = re.sub(r'[\u200b\u200c\u200d\ufeff\u2060\u00ad]', '', text[:8000])
             prompt = f"Sintetizza in italiano:\n\n{_sanitize_for_llm(safe_text, max_len=6000)}\n\nFatti principali in max 5 punti."
-            summary = await _external_call(_summarize_with_llm, prompt)
-        return json.dumps(
-            {
-                "status": "success",
-                "url": url,
-                "title": title,
-                "summary": summary,
-                "content_preview": text[:2000],
-                "total_chars": len(text),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+            try:
+                summary = await asyncio.wait_for(
+                    _external_call(_summarize_with_llm, prompt), timeout=120)
+            except asyncio.TimeoutError:
+                sys.stderr.write("LLM call timed out (120s)\n")
+                summary = None
+        return {
+            "status": "success",
+            "url": url,
+            "title": title,
+            "summary": summary,
+            "content_preview": text[:2000],
+            "total_chars": len(text),
+        }
     except Exception as e:
-        return json.dumps({
+        return {
             "error": "Errore durante la lettura della pagina",
             "url": url,
-        }, indent=2)
+        }
 
 
 # ── Scientific Computing Tools (SymPy + NumPy/SciPy) ────────────────────
@@ -745,7 +773,7 @@ else:
 
 
 async def main():
-    print(f"🔮 Hermes MCP Server v2.1.1", file=sys.stderr)
+    print(f"🔮 Hermes MCP Server v2.2.0", file=sys.stderr)
     print(f"   Transport: {TRANSPORT}", file=sys.stderr)
     print(f"   LLM: {LLM_ENDPOINT}", file=sys.stderr)
 
